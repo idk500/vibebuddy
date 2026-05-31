@@ -25,6 +25,7 @@ export interface StatusUpdate {
 
 export interface ToolEvent {
   type: 'tool'
+  id?: string
   name: string
   status: 'started' | 'completed' | 'failed'
   args: Record<string, unknown>

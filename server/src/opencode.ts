@@ -208,17 +208,19 @@ export function createOpenCodeRelay(opencodeUrl: string): OpenCodeRelay {
       // ── Tool state changes ──────────────────────────
       case 'message.part.updated': {
         const part = props['part'] as Record<string, unknown> | undefined
-        if (!part || part['type'] !== 'tool') break
+        if (!isToolPart(part)) break
 
-        const toolName = toStr(part['tool'], 'unknown')
+        const toolName = toolPartName(part)
         const state = part['state'] as Record<string, unknown> | undefined
-        const stateStatus = toStr(state?.['status'], '')
+        const stateStatus = toolPartStatus(part)
         const toolInput = (state?.['input'] ?? {}) as Record<string, unknown>
+        const toolId = toStr(part['id'] ?? part['toolCallId'] ?? part['callId'], undefined)
 
-        if (stateStatus === 'running') {
-          const title = state?.['title'] ? toStr(state['title'], '') : ''
+        if (stateStatus === 'started') {
+          const title = state?.['title'] ? toStr(state['title'], '') : toStr(part['title'], '')
           results.push({
             type: 'tool',
+            id: toolId,
             name: toolName,
             status: 'started',
             args: toolInput,
@@ -234,18 +236,20 @@ export function createOpenCodeRelay(opencodeUrl: string): OpenCodeRelay {
             errorCount: 0,
           })
         } else if (stateStatus === 'completed') {
-          const title = state?.['title'] ? toStr(state['title'], '') : ''
+          const title = state?.['title'] ? toStr(state['title'], '') : toStr(part['title'], '')
           results.push({
             type: 'tool',
+            id: toolId,
             name: toolName,
             status: 'completed',
             args: toolInput,
             title,
             ts: Date.now(),
           })
-        } else if (stateStatus === 'error') {
+        } else if (stateStatus === 'failed') {
           results.push({
             type: 'tool',
+            id: toolId,
             name: toolName,
             status: 'failed',
             args: toolInput,
@@ -430,4 +434,27 @@ function toStr(value: unknown, fallback: string | undefined): string | undefined
   if (typeof value === 'string') return value
   if (typeof value === 'number' || typeof value === 'boolean') return value.toString(10)
   return JSON.stringify(value)
+}
+
+function toolPartName(part: Record<string, unknown>): string {
+  const state = part['state'] as Record<string, unknown> | undefined
+  return toStr(part['tool'] ?? part['name'] ?? part['toolName'] ?? part['id'] ?? state?.['tool'] ?? state?.['name'] ?? state?.['toolName'], 'unknown')
+}
+
+function toolPartStatus(part: Record<string, unknown>): 'started' | 'completed' | 'failed' | '' {
+  const state = part['state'] as Record<string, unknown> | string | undefined
+  const stateRecord = typeof state === 'object' && state !== null ? state : undefined
+  const raw = stateRecord?.['status'] ?? stateRecord?.['type'] ?? part['status'] ?? part['state'] ?? part['phase'] ?? ''
+  const status = toStr(raw, '').toLowerCase()
+  if (['running', 'starting', 'pending', 'in_progress', 'started'].includes(status)) return 'started'
+  if (['completed', 'complete', 'done', 'success', 'finished'].includes(status)) return 'completed'
+  if (['error', 'failed', 'failure'].includes(status)) return 'failed'
+  return ''
+}
+
+function isToolPart(part: Record<string, unknown> | undefined): part is Record<string, unknown> {
+  if (!part) return false
+  if (part['type'] === 'tool' || part['type'] === 'tool_call' || part['type'] === 'tool-result') return true
+  const state = part['state'] as Record<string, unknown> | undefined
+  return Boolean(part['tool'] || part['toolName'] || state?.['tool'] || state?.['toolName'])
 }

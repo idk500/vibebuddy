@@ -72,6 +72,25 @@ function isAssistantInfo(info) {
   return info.role === "assistant" || info.role === undefined
 }
 
+function toolPartName(part) {
+  return part && (part.tool || part.name || part.toolName || part.id || (part.state && (part.state.tool || part.state.name || part.state.toolName))) || "unknown"
+}
+
+function toolPartStatus(part) {
+  const raw = part && ((part.state && (part.state.status || part.state.type)) || part.status || part.state || part.phase || "")
+  const status = String(raw).toLowerCase()
+  if (status === "running" || status === "starting" || status === "pending" || status === "in_progress" || status === "started") return "started"
+  if (status === "completed" || status === "complete" || status === "done" || status === "success" || status === "finished") return "completed"
+  if (status === "error" || status === "failed" || status === "failure") return "failed"
+  return ""
+}
+
+function isToolPart(part) {
+  if (!part) return false
+  if (part.type === "tool" || part.type === "tool_call" || part.type === "tool-result") return true
+  return !!(part.tool || part.toolName || (part.state && (part.state.tool || part.state.toolName)))
+}
+
 function mapEvent(event) {
   const type = eventTypeOf(event)
   const props = eventPropsOf(event)
@@ -106,16 +125,17 @@ function mapEvent(event) {
     }
     case "message.part.updated": {
       const part = props.part || {}
-      if (part.type !== "tool") break
-      const toolName = part.tool || "unknown"
+      if (!isToolPart(part)) break
+      const toolName = toolPartName(part)
       const state = part.state || {}
-      const stateStatus = state.status || ""
-      if (stateStatus === "running") {
-        messages.push(withSource({ type: "tool", name: toolName, status: "started", args: {}, title: state.title || "", ts: now() }, sessionId))
+      const stateStatus = toolPartStatus(part)
+      const toolId = part.id || part.toolCallId || part.callId
+      if (stateStatus === "started") {
+        messages.push(withSource({ type: "tool", id: toolId, name: toolName, status: "started", args: {}, title: state.title || part.title || "", ts: now() }, sessionId))
         messages.push(withSource({ type: "status", status: "EXECUTING", task: state.title || "Running: " + toolName, duration: 0, toolCount: 0, errorCount: 0 }, sessionId))
-      } else if (stateStatus === "completed") messages.push(withSource({ type: "tool", name: toolName, status: "completed", args: {}, title: state.title || "", ts: now() }, sessionId))
-      else if (stateStatus === "error") {
-        messages.push(withSource({ type: "tool", name: toolName, status: "failed", args: {}, ts: now() }, sessionId))
+      } else if (stateStatus === "completed") messages.push(withSource({ type: "tool", id: toolId, name: toolName, status: "completed", args: {}, title: state.title || part.title || "", ts: now() }, sessionId))
+      else if (stateStatus === "failed") {
+        messages.push(withSource({ type: "tool", id: toolId, name: toolName, status: "failed", args: {}, ts: now() }, sessionId))
         messages.push(withSource({ type: "log", level: "error", message: "Tool " + toolName + " failed", ts: now() }, sessionId))
       }
       break

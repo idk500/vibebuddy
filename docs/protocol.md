@@ -73,6 +73,24 @@ Status event:
 }
 ```
 
+Tool event:
+
+```json
+{
+  "type": "tool",
+  "sourceId": "opencode:1234:abcd",
+  "sessionId": "ses_1",
+  "id": "tool-call-1",
+  "name": "bash",
+  "status": "started",
+  "args": {},
+  "title": "Run tests",
+  "ts": 1760000000000
+}
+```
+
+`id` is optional but recommended. When present, phone clients use it to avoid double-counting `started` plus `completed`/`failed` updates for the same tool call.
+
 Permission event:
 
 ```json

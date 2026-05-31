@@ -213,7 +213,7 @@
 
   AndonRenderer.prototype.update = function (data) {
     var status = data.status || 'DISCONNECTED'
-    this.scheduleSettle(status)
+    if (data.settle !== false) this.scheduleSettle(status)
     var color = STATUS_COLORS[status] || STATUS_COLORS.DISCONNECTED
     if (status !== this.currentStatus) {
       this.currentStatus = status
@@ -250,7 +250,8 @@
     this.settleTimer = setTimeout(function () {
       self.settleTimer = null
       if (self.currentStatus === 'THINKING' || self.currentStatus === 'EXECUTING') {
-        self.update({ status: 'IDLE', task: 'No recent activity', duration: 0 })
+        pauseStats()
+        self.update(withLocalStats({ status: 'IDLE', task: 'No recent activity' }))
       }
     }, 25000)
   }
@@ -295,6 +296,19 @@
   var pendingPromptOverlays = {}
   var seenSources = {}
   var connected = false
+  var statsState = {
+    key: null,
+    startedAt: null,
+    elapsed: 0,
+    active: false,
+    timer: null,
+    toolCount: 0,
+    errorCount: 0,
+    countedTools: {},
+    failedTools: {},
+    statusErrorCounted: false,
+    activeTools: {}
+  }
 
   var connectScreen, andonScreen, serverUrlInput, connectBtn, connectStatus, connectionDot, sessionLabel, clock, disconnectBtn, fullscreenBtn
 
@@ -311,6 +325,166 @@
     return message.indexOf('OpenCode event: server.instance') === 0 ||
       message.indexOf('OpenCode event: storage.write') === 0 ||
       message.indexOf('OpenCode event: file.watcher') === 0
+  }
+
+  function messageSessionId(msg) {
+    return msg && (msg.sessionId || msg.sessionID || '')
+  }
+
+  function statsKey(msg) {
+    var sourceId = msg && msg.sourceId ? String(msg.sourceId) : 'source'
+    var sessionId = messageSessionId(msg) ? String(messageSessionId(msg)) : 'session'
+    return sourceId + '|' + sessionId
+  }
+
+  function resetStats(msg) {
+    statsState.key = msg ? statsKey(msg) : null
+    statsState.startedAt = null
+    statsState.elapsed = 0
+    statsState.active = false
+    statsState.toolCount = 0
+    statsState.errorCount = 0
+    statsState.countedTools = {}
+    statsState.failedTools = {}
+    statsState.statusErrorCounted = false
+    statsState.activeTools = {}
+    stopStatsTimer()
+  }
+
+  function ensureStatsSession(msg) {
+    var key = statsKey(msg)
+    if (statsState.key !== key) resetStats(msg)
+  }
+
+  function currentDuration() {
+    if (!statsState.active || !statsState.startedAt) return statsState.elapsed
+    return statsState.elapsed + Math.max(0, Date.now() - statsState.startedAt)
+  }
+
+  function renderStatsTick() {
+    if (!andon) return
+    andon.update({
+      status: andon.currentStatus || 'IDLE',
+      settle: false,
+      duration: currentDuration(),
+      toolCount: statsState.toolCount,
+      errorCount: statsState.errorCount
+    })
+  }
+
+  function startStatsTimer() {
+    if (statsState.timer) return
+    statsState.timer = setInterval(renderStatsTick, 1000)
+  }
+
+  function stopStatsTimer() {
+    if (statsState.timer) {
+      clearInterval(statsState.timer)
+      statsState.timer = null
+    }
+  }
+
+  function startStats(msg) {
+    ensureStatsSession(msg)
+    if (!statsState.active) {
+      statsState.startedAt = Date.now()
+      statsState.active = true
+    }
+    startStatsTimer()
+  }
+
+  function pauseStats() {
+    if (statsState.active) {
+      statsState.elapsed = currentDuration()
+      statsState.startedAt = null
+      statsState.active = false
+    }
+    stopStatsTimer()
+  }
+
+  function shouldUseIncomingCount(value, localValue) {
+    return value !== undefined && Number(value) > localValue
+  }
+
+  function withLocalStats(msg) {
+    var out = {}
+    var key
+    for (key in msg) out[key] = msg[key]
+    if (shouldUseIncomingCount(msg.toolCount, statsState.toolCount)) statsState.toolCount = Number(msg.toolCount)
+    if (shouldUseIncomingCount(msg.errorCount, statsState.errorCount)) statsState.errorCount = Number(msg.errorCount)
+    out.toolCount = statsState.toolCount
+    out.errorCount = statsState.errorCount
+    out.duration = currentDuration()
+    return out
+  }
+
+  function handleStatsForStatus(msg) {
+    ensureStatsSession(msg)
+    var status = msg.status
+    if (status === 'THINKING' || status === 'EXECUTING') startStats(msg)
+    else if (status === 'ERROR') {
+      if (!statsState.statusErrorCounted) {
+        statsState.errorCount++
+        statsState.statusErrorCounted = true
+      }
+      pauseStats()
+    } else if (status === 'IDLE' || status === 'COMPLETE' || status === 'DISCONNECTED') pauseStats()
+    if (shouldUseIncomingCount(msg.toolCount, statsState.toolCount)) statsState.toolCount = Number(msg.toolCount)
+    if (shouldUseIncomingCount(msg.errorCount, statsState.errorCount)) statsState.errorCount = Number(msg.errorCount)
+  }
+
+  function toolEventKey(msg) {
+    if (msg.id || msg.toolCallId || msg.callId) return String(msg.id || msg.toolCallId || msg.callId)
+    return ''
+  }
+
+  function activeToolKey(msg) {
+    return String(msg.name || 'tool')
+  }
+
+  function handleStatsForTool(msg) {
+    ensureStatsSession(msg)
+    var key = toolEventKey(msg)
+    var nameKey = activeToolKey(msg)
+    if (msg.status === 'started') {
+      if (!key || !statsState.countedTools[key]) {
+        if (key) statsState.countedTools[key] = true
+        statsState.activeTools[nameKey] = (statsState.activeTools[nameKey] || 0) + 1
+        statsState.toolCount++
+      }
+      startStats(msg)
+    } else if (msg.status === 'failed') {
+      if (key && !statsState.countedTools[key]) {
+        statsState.countedTools[key] = true
+        statsState.toolCount++
+      } else if (!key && statsState.activeTools[nameKey] <= 0) {
+        statsState.toolCount++
+      }
+      if (statsState.activeTools[nameKey] > 0) {
+        statsState.activeTools[nameKey]--
+      }
+      if (!key || !statsState.failedTools[key]) {
+        if (key) statsState.failedTools[key] = true
+        statsState.errorCount++
+      }
+      startStats(msg)
+    } else if (msg.status === 'completed') {
+      if (key && !statsState.countedTools[key]) {
+        statsState.countedTools[key] = true
+        statsState.toolCount++
+      } else if (!key && statsState.activeTools[nameKey] <= 0) {
+        statsState.toolCount++
+      }
+      if (statsState.activeTools[nameKey] > 0) {
+        statsState.activeTools[nameKey]--
+      }
+    }
+  }
+
+  function handleStatsForLog(msg) {
+    if (isNoisyLog(msg)) return
+    if (msg.sourceId || messageSessionId(msg) || !statsState.key) ensureStatsSession(msg)
+    if (msg.level === 'error' && !/^(Tool .+ failed|Session error)/.test(String(msg.message || ''))) statsState.errorCount++
   }
 
   function detectServerHost() {
@@ -373,6 +547,7 @@
   function handleDisconnect() {
     ws.disconnect()
     connected = false
+    resetStats(null)
     andon.reset()
     log.clear()
     showScreen('connect')
@@ -411,13 +586,18 @@
         log.addLogEntry({ level: 'info', message: 'Source registered: ' + (msg.name || msg.sourceId), ts: msg.ts || Date.now() })
       }
     } else if (type === 'status') {
-      andon.update(msg)
+      handleStatsForStatus(msg)
+      andon.update(withLocalStats(msg))
       if (msg.sessionId) sessionLabel.textContent = 'Session: ' + String(msg.sessionId).slice(0, 8)
     } else if (type === 'tool') {
+      handleStatsForTool(msg)
       log.addToolEvent(msg)
-      if (msg.status === 'started') andon.update({ status: 'EXECUTING', task: msg.title || ('Running: ' + msg.name) })
+      if (msg.status === 'started') andon.update(withLocalStats({ status: 'EXECUTING', sourceId: msg.sourceId, sessionId: msg.sessionId, task: msg.title || ('Running: ' + msg.name) }))
+      else renderStatsTick()
     } else if (type === 'log') {
+      handleStatsForLog(msg)
       if (!isNoisyLog(msg)) log.addLogEntry(msg)
+      if (msg.level === 'error') renderStatsTick()
     } else if (type === 'question') {
       log.addLogEntry({ level: 'warn', message: 'Question: ' + (msg.questions && msg.questions[0] ? msg.questions[0].header || '' : ''), ts: Date.now() })
       showQuestionOverlay(msg)
