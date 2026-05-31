@@ -4,11 +4,11 @@
 
 VibeCoding Companion — 老旧安卓手机上的 AI 编码辅助指示器 + 语音终端。
 
-将闲置安卓手机变为 PC 端 AI 编码工具（OpenCode）的安灯状态看板和语音输入中继。
+将闲置安卓手机变为 PC 端 AI 编码工具（OpenCode 等）的安灯状态看板、远程确认终端和语音输入中继。
 
 - Phone: PWA (纯 HTML/CSS/JS, 零构建步骤)
 - Server: Node.js + TypeScript + ws
-- 协议: WebSocket (JSON 文本帧 + 二进制音频帧)
+- 协议: HTTP Adapter API + WebSocket (JSON 文本帧 + 二进制音频帧)
 - 设备测试: Redmi Note 12T Pro (Android 13)
 - 默认端口: 4097 (避免与其他服务冲突)
 
@@ -53,7 +53,7 @@ npm run typecheck && npm run lint
 
 # === 真机测试 ===
 # 1. PC 端启动: cd server && npm run dev
-# 2. 手机浏览器打开: http://<PC-IP>:4096
+# 2. 手机浏览器打开: http://<PC-IP>:4097
 # 3. 点击连接 (自动检测或手动输入)
 ```
 
@@ -64,7 +64,10 @@ vibe-companion/
 ├── docs/                    # A-SPICE 文档
 │   ├── requirements.md      # SYS.1 + SYS.2 需求
 │   ├── architecture.md      # SYS.3 + SWE.2 架构
-│   └── plan.md              # 开发计划
+│   ├── plan.md              # 开发计划
+│   ├── operations.md        # 启动/安装/排障手册
+│   ├── protocol.md          # Relay Hub 协议
+│   └── acceptance-phase-1.5.md # 验收记录
 ├── server/                  # PC 端 Relay Server
 │   ├── src/
 │   │   ├── index.ts         # 入口: HTTP + WebSocket 启动
@@ -95,12 +98,18 @@ vibe-companion/
 ## 数据流
 
 ```
-OpenCode (serve, :11434)
-  ↓ SDK event.subscribe()
-opencode.ts → 解析事件 → relay.ts → 格式化为协议消息
+OpenCode Plugin / future adapters
+  ↓ HTTP /api/register + /api/event
+Relay Hub → source registry / pending request registry / reply queues
   ↓ WebSocket broadcast
 ws.js → 接收消息 → andon.js → DOM 更新
-                       ↘ log.js → 日志追加
+                        ↘ log.js → 日志追加
+
+Phone prompt reply
+  ↓ WebSocket permission_reply/question_reply
+Relay Hub → source-bound reply queue + reply_ack
+  ↓ HTTP /api/replies polling
+OpenCode Plugin → permission.ask output.status
 
 # 语音 (Phase 2)
 voice.js → MediaRecorder → WebSocket binary frame
@@ -133,7 +142,7 @@ audio.ts → 解码 → PC 音频输出
 - Server 端: TypeScript strict mode, 显式类型标注
 
 ### 版本管理
-- commit 格式: `vX.Y.Z: 简要描述`
+- commit 格式: Conventional Commits，例如 `feat: establish relay hub approval loop`
 - 每个 Phase 完成一个 minor 版本
 - bugfix 单独 commit
 
