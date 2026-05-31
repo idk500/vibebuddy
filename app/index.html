@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="description" content="VibeCoding Companion — AI coding status Andon board + voice terminal">
+  <title>VibeCoding Companion</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
+  <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+  <!-- Error bar: shows if anything breaks -->
+  <div id="js-error" style="display:none;position:fixed;bottom:0;left:0;right:0;background:#ef4444;color:white;padding:8px 16px;font:14px monospace;z-index:9999"></div>
+
+  <!-- Connection Screen -->
+  <div id="connect-screen" class="screen active">
+    <div class="connect-box">
+      <h1 class="connect-title">VibeCoding Companion</h1>
+      <p class="connect-subtitle">AI 编码辅助指示器</p>
+      <div class="connect-form">
+        <div class="input-group">
+          <label for="server-url">服务器地址</label>
+          <input type="text" id="server-url" placeholder="192.168.1.5:4097"
+                 autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        </div>
+        <button id="connect-btn" class="btn-primary">
+          <span class="btn-icon">⚡</span> 连接
+        </button>
+      </div>
+      <div id="connect-status" class="connect-status" role="status" aria-live="polite"></div>
+      <div class="connect-hint">
+        <p>1. PC 端启动: <code>npm run dev</code></p>
+        <p>2. 确保手机与 PC 在同一 WiFi</p>
+        <p>3. 输入 PC 的 IP 地址和端口</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Andon Screen -->
+  <div id="andon-screen" class="screen">
+    <header class="header">
+      <div class="header-left">
+        <span id="connection-dot" class="status-dot"></span>
+        <span class="header-title">VibeCoding Companion</span>
+      </div>
+      <div class="header-center">
+        <span id="session-label" class="session-label">Session: —</span>
+      </div>
+      <div class="header-right">
+        <span id="clock" class="header-clock"></span>
+        <button id="disconnect-btn" class="btn-icon-only" title="断开连接">✕</button>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <section class="andon-panel" id="andon-panel" data-status="DISCONNECTED">
+        <div class="andon-glow" id="andon-glow"></div>
+        <div class="andon-card">
+          <div class="andon-status-badge" id="andon-status-badge">
+            <span id="andon-status-icon" class="status-icon">●</span>
+            <span id="andon-status-text" class="status-text">DISCONNECTED</span>
+          </div>
+          <p id="andon-task" class="andon-task">等待连接...</p>
+          <div class="andon-stats">
+            <div class="stat"><span class="stat-label">Tools</span><span id="stat-tools" class="stat-value">0</span></div>
+            <div class="stat"><span class="stat-label">Errors</span><span id="stat-errors" class="stat-value">0</span></div>
+            <div class="stat"><span class="stat-label">Duration</span><span id="stat-duration" class="stat-value">00:00</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="log-panel">
+        <h2 class="log-title">Activity Log</h2>
+        <div id="log-container" class="log-container" role="log" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <button id="voice-btn" class="btn-action" disabled title="语音输入 (Phase 2)">
+        <span class="btn-action-icon">🎤</span><span class="btn-action-label">Voice</span>
+      </button>
+      <button id="camera-btn" class="btn-action" disabled title="摄像头 (Phase 3)">
+        <span class="btn-action-icon">📷</span><span class="btn-action-label">Camera</span>
+      </button>
+      <div class="footer-spacer"></div>
+      <button id="fullscreen-btn" class="btn-action" title="全屏">
+        <span class="btn-action-icon">⛶</span><span class="btn-action-label">Full Screen</span>
+      </button>
+    </footer>
+  </div>
+
+  <!-- Prompt overlay (for questions / permissions) -->
+  <div id="prompt-overlay" class="prompt-overlay" style="display:none"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

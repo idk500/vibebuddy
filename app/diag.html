@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>VibeCoding Companion - Diag</title>
+  <style>
+    body { font-family: monospace; background: #0f172a; color: #e2e8f0; padding: 2rem; }
+    .ok { color: #34d399; }
+    .fail { color: #ef4444; }
+    .warn { color: #f59e0b; }
+    h1 { font-size: 1.2rem; }
+    pre { background: #1e293b; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>VibeCoding Companion — Connection Diagnostic</h1>
+  <pre id="log"></pre>
+  <script>
+    const log = document.getElementById('log')
+    function out(msg, cls) {
+      const span = document.createElement('span')
+      span.className = cls || ''
+      span.textContent = msg + '\n'
+      log.appendChild(span)
+    }
+
+    async function diag() {
+      out('=== Environment ===')
+      out('URL: ' + window.location.href)
+      out('Protocol: ' + window.location.protocol)
+      out('Host: ' + window.location.host)
+      out('Hostname: ' + window.location.hostname)
+      out('Port: ' + window.location.port)
+      out('UserAgent: ' + navigator.userAgent.slice(0, 80))
+
+      // Test auto-detect
+      out('\n=== Auto-detect ===')
+      const loc = window.location
+      let detected = null
+      if (loc.protocol === 'http:' && loc.port && loc.port !== '80') {
+        detected = loc.host
+        out('Detected server: ' + detected, 'ok')
+      } else {
+        out('Could NOT auto-detect server', 'fail')
+        out('  protocol=' + loc.protocol + ' port=' + loc.port, 'warn')
+      }
+
+      // Test WebSocket
+      out('\n=== WebSocket Test ===')
+      const wsHost = detected || loc.host
+      const wsUrl = 'ws://' + wsHost + '/ws'
+      out('Connecting to: ' + wsUrl)
+      try {
+        const msg = await new Promise((resolve, reject) => {
+          const ws = new WebSocket(wsUrl)
+          const timer = setTimeout(() => { ws.close(); reject(new Error('timeout 3s')) }, 3000)
+          ws.onmessage = (e) => { clearTimeout(timer); ws.close(); resolve(e.data) }
+          ws.onerror = (e) => { clearTimeout(timer); reject(new Error('WS error')) }
+          ws.onopen = () => out('  WS OPEN', 'ok')
+        })
+        out('  Received: ' + msg, 'ok')
+        out('\nWebSocket OK!', 'ok')
+      } catch (e) {
+        out('  ' + e.message, 'fail')
+        out('\nWebSocket FAILED', 'fail')
+      }
+
+      // Test HTTP
+      out('\n=== HTTP Test ===')
+      try {
+        const r = await fetch('/manifest.json')
+        out('GET /manifest.json: HTTP ' + r.status, r.ok ? 'ok' : 'fail')
+      } catch(e) {
+        out('GET /manifest.json: ' + e.message, 'fail')
+      }
+
+      out('\n=== Done ===')
+      out('If WebSocket OK, the app should work.')
+      out('Try: Ctrl+Shift+R to hard-refresh the main page.')
+    }
+
+    diag()
+  </script>
+</body>
+</html>
