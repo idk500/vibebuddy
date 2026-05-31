@@ -274,6 +274,7 @@
   var andon = null
   var log = null
   var pendingPromptOverlays = {}
+  var seenSources = {}
   var connected = false
 
   var connectScreen, andonScreen, serverUrlInput, connectBtn, connectStatus, connectionDot, sessionLabel, clock, disconnectBtn, fullscreenBtn
@@ -284,6 +285,13 @@
 
   function localStorageSet(key, value) {
     try { window.localStorage.setItem(key, value) } catch (e) {}
+  }
+
+  function isNoisyLog(msg) {
+    var message = String(msg && msg.message ? msg.message : '')
+    return message.indexOf('OpenCode event: server.instance') === 0 ||
+      message.indexOf('OpenCode event: storage.write') === 0 ||
+      message.indexOf('OpenCode event: file.watcher') === 0
   }
 
   function detectServerHost() {
@@ -379,7 +387,10 @@
       console.log('[app] Server version: ' + msg.serverVersion)
     } else if (type === 'source') {
       sessionLabel.textContent = (msg.tool || 'Source') + ': ' + String(msg.sourceId || '').slice(0, 16)
-      log.addLogEntry({ level: 'info', message: 'Source registered: ' + (msg.name || msg.sourceId), ts: msg.ts || Date.now() })
+      if (!seenSources[msg.sourceId]) {
+        seenSources[msg.sourceId] = true
+        log.addLogEntry({ level: 'info', message: 'Source registered: ' + (msg.name || msg.sourceId), ts: msg.ts || Date.now() })
+      }
     } else if (type === 'status') {
       andon.update(msg)
       if (msg.sessionId) sessionLabel.textContent = 'Session: ' + String(msg.sessionId).slice(0, 8)
@@ -387,7 +398,7 @@
       log.addToolEvent(msg)
       if (msg.status === 'started') andon.update({ status: 'EXECUTING', task: msg.title || ('Running: ' + msg.name) })
     } else if (type === 'log') {
-      log.addLogEntry(msg)
+      if (!isNoisyLog(msg)) log.addLogEntry(msg)
     } else if (type === 'question') {
       log.addLogEntry({ level: 'warn', message: 'Question: ' + (msg.questions && msg.questions[0] ? msg.questions[0].header || '' : ''), ts: Date.now() })
       showQuestionOverlay(msg)

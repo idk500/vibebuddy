@@ -87,6 +87,7 @@ function mapEvent(event) {
       if (info.role === "assistant") {
         const completed = info.time && info.time.completed
         if (!completed) messages.push(withSource({ type: "status", status: "THINKING", task: "Generating response...", duration: 0, toolCount: 0, errorCount: 0 }, info.sessionID || sessionId))
+        else messages.push(withSource({ type: "status", status: "IDLE", task: "Response complete", duration: 0, toolCount: 0, errorCount: 0 }, info.sessionID || sessionId))
       }
       break
     }
