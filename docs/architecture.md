@@ -226,6 +226,33 @@ Adapter POST /api/event(permission/question)
 - 成功入队：ACK `accepted`
 - 不再使用全局 mutable OpenCode URL 作为确认路由依据
 
+### 3.5 安灯状态机收敛策略
+
+OpenCode 等工具的事件不是严格的“开始/结束”成对协议，不能假设最后一个事件一定是 `session.idle`。Phase 1.5 后采用三层状态收敛：
+
+```text
+Adapter/plugin event mapping
+  → Relay Hub source/session activity state
+  → PWA local display fallback
+```
+
+状态职责划分：
+
+| 层级 | 职责 | 失败兜底 |
+|------|------|----------|
+| Adapter/plugin | 尽量把工具事件映射成 `THINKING` / `EXECUTING` / `IDLE`，例如 assistant message completed → `IDLE` | 若工具未发完成形状或形状变化，可能漏掉 IDLE |
+| Relay Hub | 对每个 `sourceId + sessionId` 的 `THINKING`/`EXECUTING` 设置无活动收敛定时器，默认 20s 后发 `IDLE` | 环境变量 `VIBE_STATUS_SETTLE_MS` 可调 |
+| PWA | 对当前显示的 `THINKING`/`EXECUTING` 再设置本地 25s 兜底，防止 relay/plugin 漏发或网络丢包 | 显示 `No recent activity` |
+
+规则：
+
+- 明确完成事件优先：`session.idle`、assistant message completed、完成状态字段会立即使状态回到 `IDLE`。
+- 工具运行事件使状态进入 `EXECUTING`。
+- assistant message 未完成使状态进入 `THINKING`。
+- 任何新的 `THINKING`/`EXECUTING` 会重置该 source/session 的收敛定时器。
+- 心跳/source 注册不改变安灯状态，也不刷屏日志。
+- Relay Hub 是系统级状态机的主兜底；PWA 兜底只负责显示层自愈。
+
 ## 4. 安灯 UI 布局设计
 
 ### 4.1 横屏布局 (主要)

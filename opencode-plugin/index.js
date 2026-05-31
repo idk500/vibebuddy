@@ -59,6 +59,19 @@ function summarizeEvent(input) {
   return "OpenCode event: " + type + (keys ? " {" + keys + "}" : "")
 }
 
+function isCompleteInfo(info) {
+  if (!info) return false
+  if (info.time && info.time.completed) return true
+  if (info.completed || info.done || info.finished) return true
+  const status = String(info.status || info.state || "").toLowerCase()
+  return status === "complete" || status === "completed" || status === "done" || status === "idle"
+}
+
+function isAssistantInfo(info) {
+  if (!info) return false
+  return info.role === "assistant" || info.role === undefined
+}
+
 function mapEvent(event) {
   const type = eventTypeOf(event)
   const props = eventPropsOf(event)
@@ -84,8 +97,8 @@ function mapEvent(event) {
       break
     case "message.updated": {
       const info = props.info || {}
-      if (info.role === "assistant") {
-        const completed = info.time && info.time.completed
+      if (isAssistantInfo(info)) {
+        const completed = isCompleteInfo(info)
         if (!completed) messages.push(withSource({ type: "status", status: "THINKING", task: "Generating response...", duration: 0, toolCount: 0, errorCount: 0 }, info.sessionID || sessionId))
         else messages.push(withSource({ type: "status", status: "IDLE", task: "Response complete", duration: 0, toolCount: 0, errorCount: 0 }, info.sessionID || sessionId))
       }
@@ -141,8 +154,8 @@ function mapEvent(event) {
     default: {
       if (type.indexOf("tool") >= 0) {
         messages.push(withSource({ type: "status", status: "EXECUTING", task: type, duration: 0, toolCount: 0, errorCount: 0 }, sessionId))
-      } else if (type.indexOf("message") >= 0 || type.indexOf("session") >= 0) {
-        messages.push(withSource({ type: "status", status: "THINKING", task: type, duration: 0, toolCount: 0, errorCount: 0 }, sessionId))
+      } else if (type.indexOf("idle") >= 0 || type.indexOf("complete") >= 0 || type.indexOf("completed") >= 0) {
+        messages.push(withSource({ type: "status", status: "IDLE", task: type, duration: 0, toolCount: 0, errorCount: 0 }, sessionId))
       }
       break
     }

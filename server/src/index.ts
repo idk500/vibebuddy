@@ -25,6 +25,7 @@ import { createOpenCodeRelay } from './opencode.js'
 // Mutable OpenCode server URL — updated by plugin via /api/config
 let opencodeServerUrl = process.env['VIBE_OPENCODE_URL'] ?? 'http://localhost:11434'
 const REQUEST_TTL_MS = parseInt(process.env['VIBE_REQUEST_TTL_MS'] ?? '120000', 10)
+const STATUS_SETTLE_MS = parseInt(process.env['VIBE_STATUS_SETTLE_MS'] ?? '20000', 10)
 
 const DEFAULT_CONFIG: ServerConfig = {
   port: parseInt(process.env['VIBE_PORT'] ?? '4097', 10),
@@ -60,6 +61,7 @@ interface RelayHubState {
   sources: Map<string, SourceInstance>
   pendingRequests: Map<string, PendingRequest>
   replyQueues: Map<string, AdapterReply[]>
+  statusTimers: Map<string, ReturnType<typeof setTimeout>>
   stats: {
     startedAt: number
     eventsReceived: number
@@ -86,6 +88,7 @@ export function main(config: ServerConfig = DEFAULT_CONFIG): void {
     sources: new Map<string, SourceInstance>(),
     pendingRequests: new Map<string, PendingRequest>(),
     replyQueues: new Map<string, AdapterReply[]>(),
+    statusTimers: new Map<string, ReturnType<typeof setTimeout>>(),
     stats: {
       startedAt: Date.now(),
       eventsReceived: 0,
@@ -308,6 +311,7 @@ function handleHttpRequest(
       hub.stats.lastEvent = msg as ServerMessage
       hub.stats.lastEventAt = Date.now()
       const sent = broadcast(clients, msg as ServerMessage)
+      settleStatusAfterInactivity(msg, clients, hub)
       console.log(`[hub] event ${msg.type} from ${sourceId ?? 'unknown'} → ${sent} client(s)`)
       writeJson(res, 200, { ok: true, sent })
     })
@@ -501,6 +505,49 @@ function registerSource(input: RegisterSourceRequest, hub: RelayHubState): Sourc
 function normalizeSessionId(msg: Record<string, unknown>): string | undefined {
   const sessionId = msg['sessionId'] ?? msg['sessionID']
   return typeof sessionId === 'string' ? sessionId : undefined
+}
+
+function statusTimerKey(sourceId: string | undefined, sessionId: string | undefined): string {
+  return `${sourceId ?? 'unknown'}:${sessionId ?? 'default'}`
+}
+
+function settleStatusAfterInactivity(
+  msg: Partial<ServerMessage> & Record<string, unknown>,
+  clients: Set<WebSocket>,
+  hub: RelayHubState,
+): void {
+  if (msg.type !== 'status') return
+
+  const sourceId = typeof msg.sourceId === 'string' ? msg.sourceId : undefined
+  const sessionId = normalizeSessionId(msg)
+  const key = statusTimerKey(sourceId, sessionId)
+  const existing = hub.statusTimers.get(key)
+  if (existing) {
+    clearTimeout(existing)
+    hub.statusTimers.delete(key)
+  }
+
+  const status = msg.status
+  if (status !== 'THINKING' && status !== 'EXECUTING') return
+
+  const timer = setTimeout(() => {
+    hub.statusTimers.delete(key)
+    const idle: ServerMessage = {
+      type: 'status',
+      sourceId,
+      sessionId,
+      status: 'IDLE',
+      task: 'No recent activity',
+      duration: 0,
+      toolCount: typeof msg.toolCount === 'number' ? msg.toolCount : 0,
+      errorCount: typeof msg.errorCount === 'number' ? msg.errorCount : 0,
+    }
+    const sent = broadcast(clients, idle)
+    hub.stats.lastEvent = idle
+    hub.stats.lastEventAt = Date.now()
+    console.log(`[hub] status settled ${key} → IDLE after ${STATUS_SETTLE_MS}ms (${sent} client(s))`)
+  }, STATUS_SETTLE_MS)
+  hub.statusTimers.set(key, timer)
 }
 
 function broadcast(clients: Set<WebSocket>, message: ServerMessage): number {

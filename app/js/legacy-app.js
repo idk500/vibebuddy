@@ -202,6 +202,7 @@
   function AndonRenderer() {
     this.currentStatus = 'DISCONNECTED'
     this.durationTimer = null
+    this.settleTimer = null
     this.panel = $('andon-panel')
     this.statusText = $('andon-status-text')
     this.task = $('andon-task')
@@ -212,6 +213,7 @@
 
   AndonRenderer.prototype.update = function (data) {
     var status = data.status || 'DISCONNECTED'
+    this.scheduleSettle(status)
     var color = STATUS_COLORS[status] || STATUS_COLORS.DISCONNECTED
     if (status !== this.currentStatus) {
       this.currentStatus = status
@@ -234,6 +236,23 @@
     this.update({ status: 'DISCONNECTED', task: '等待连接...', toolCount: 0, errorCount: 0, duration: 0 })
     if (this.durationTimer) clearInterval(this.durationTimer)
     this.durationTimer = null
+    if (this.settleTimer) clearTimeout(this.settleTimer)
+    this.settleTimer = null
+  }
+
+  AndonRenderer.prototype.scheduleSettle = function (status) {
+    var self = this
+    if (this.settleTimer) {
+      clearTimeout(this.settleTimer)
+      this.settleTimer = null
+    }
+    if (status !== 'THINKING' && status !== 'EXECUTING') return
+    this.settleTimer = setTimeout(function () {
+      self.settleTimer = null
+      if (self.currentStatus === 'THINKING' || self.currentStatus === 'EXECUTING') {
+        self.update({ status: 'IDLE', task: 'No recent activity', duration: 0 })
+      }
+    }, 25000)
   }
 
   function LogRenderer() {
