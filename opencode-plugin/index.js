@@ -4,6 +4,7 @@ const RELAY_HOST = env("VIBE_RELAY_HOST") || "127.0.0.1:4097"
 const RELAY_BASE = "http://" + RELAY_HOST
 const REQUEST_TIMEOUT_MS = Number(env("VIBE_PERMISSION_TIMEOUT_MS") || "120000")
 const POLL_INTERVAL_MS = Number(env("VIBE_REPLY_POLL_INTERVAL_MS") || "500")
+const REGISTER_INTERVAL_MS = Number(env("VIBE_REGISTER_INTERVAL_MS") || "15000")
 
 function env(name) {
   try { return globalThis.process && globalThis.process.env && globalThis.process.env[name] } catch { return undefined }
@@ -43,11 +44,28 @@ function withSource(msg, sessionId) {
   return Object.assign({ sourceId: SOURCE_ID }, sessionId ? { sessionId } : {}, msg)
 }
 
+function eventTypeOf(input) {
+  return input && (input.type || input.eventType || input.name || "unknown")
+}
+
+function eventPropsOf(input) {
+  return input && (input.properties || input.props || input.payload || input.data || {})
+}
+
+function summarizeEvent(input) {
+  const type = eventTypeOf(input)
+  const props = eventPropsOf(input)
+  const keys = props && typeof props === "object" ? Object.keys(props).slice(0, 6).join(",") : ""
+  return "OpenCode event: " + type + (keys ? " {" + keys + "}" : "")
+}
+
 function mapEvent(event) {
-  const type = event.type
-  const props = event.properties || {}
+  const type = eventTypeOf(event)
+  const props = eventPropsOf(event)
   const sessionId = normalizeSessionId(props)
   const messages = []
+
+  messages.push(withSource({ type: "log", level: "info", message: summarizeEvent(event), ts: now() }, sessionId))
 
   switch (type) {
     case "session.status": {
@@ -119,6 +137,14 @@ function mapEvent(event) {
       messages.push(withSource({ type: "log", level: "warn", message: "Permission: " + (perm.tool || perm.name || "unknown"), ts: now() }, pSessionId))
       break
     }
+    default: {
+      if (type.indexOf("tool") >= 0) {
+        messages.push(withSource({ type: "status", status: "EXECUTING", task: type, duration: 0, toolCount: 0, errorCount: 0 }, sessionId))
+      } else if (type.indexOf("message") >= 0 || type.indexOf("session") >= 0) {
+        messages.push(withSource({ type: "status", status: "THINKING", task: type, duration: 0, toolCount: 0, errorCount: 0 }, sessionId))
+      }
+      break
+    }
   }
   return messages
 }
@@ -154,7 +180,7 @@ async function getJson(path) {
 }
 
 async function registerSource(serverUrl) {
-  await postJson("/api/register", {
+  return await postJson("/api/register", {
     sourceId: SOURCE_ID,
     tool: "opencode",
     name: "OpenCode " + getProcessPid(),
@@ -162,6 +188,13 @@ async function registerSource(serverUrl) {
     cwd: CWD,
     capabilities: ["events", "permission.ask", "question.asked"],
   })
+}
+
+function startRegisterHeartbeat(serverUrl) {
+  try {
+    if (typeof setInterval !== "function") return
+    setInterval(function() { registerSource(serverUrl) }, REGISTER_INTERVAL_MS)
+  } catch {}
 }
 
 async function sendToRelay(messages) {
@@ -198,11 +231,13 @@ export const VibeCompanion = async (input) => {
   const serverUrl = input && input.serverUrl
   const ocUrl = serverUrl ? serverUrl.toString() : ""
   await registerSource(ocUrl)
+  startRegisterHeartbeat(ocUrl)
   if (ocUrl) await postJson("/api/config", { opencodeUrl: ocUrl, sourceId: SOURCE_ID })
   await sendToRelay([withSource({ type: "log", level: "info", message: "Plugin loaded OK, source=" + SOURCE_ID + ", server=" + ocUrl, ts: now() }, "opencode")])
   return {
-    event: async ({ event }) => {
-      const messages = mapEvent(event)
+    event: async (input) => {
+      const actualEvent = input && input.event ? input.event : input
+      const messages = mapEvent(actualEvent)
       if (messages.length > 0) await sendToRelay(messages)
     },
     "permission.ask": async (input, output) => {

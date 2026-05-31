@@ -60,6 +60,12 @@ interface RelayHubState {
   sources: Map<string, SourceInstance>
   pendingRequests: Map<string, PendingRequest>
   replyQueues: Map<string, AdapterReply[]>
+  stats: {
+    startedAt: number
+    eventsReceived: number
+    lastEvent: ServerMessage | null
+    lastEventAt: number | null
+  }
 }
 
 function pendingKey(sourceId: string, requestId: string): string {
@@ -80,6 +86,12 @@ export function main(config: ServerConfig = DEFAULT_CONFIG): void {
     sources: new Map<string, SourceInstance>(),
     pendingRequests: new Map<string, PendingRequest>(),
     replyQueues: new Map<string, AdapterReply[]>(),
+    stats: {
+      startedAt: Date.now(),
+      eventsReceived: 0,
+      lastEvent: null,
+      lastEventAt: null,
+    },
   }
 
   // Create HTTP server (optional static files)
@@ -232,6 +244,19 @@ function handleHttpRequest(
     return
   }
 
+  // ── Diagnostics endpoint: inspect current hub state ───
+  if (urlPath === '/api/diagnostics' && req.method === 'GET') {
+    writeJson(res, 200, {
+      ok: true,
+      clients: Array.from(clients).filter((client) => client.readyState === client.OPEN).length,
+      sources: Array.from(hub.sources.values()),
+      pendingRequests: Array.from(hub.pendingRequests.values()),
+      replyQueues: Array.from(hub.replyQueues.entries()).map(([sourceId, replies]) => ({ sourceId, count: replies.length })),
+      stats: hub.stats,
+    })
+    return
+  }
+
   // ── Adapter registration endpoint ─────────────────────
   if (urlPath === '/api/register' && req.method === 'POST') {
     readJsonBody(req, res, (data) => {
@@ -279,8 +304,12 @@ function handleHttpRequest(
         })
       }
 
-      broadcast(clients, msg as ServerMessage)
-      writeJson(res, 200, { ok: true })
+      hub.stats.eventsReceived++
+      hub.stats.lastEvent = msg as ServerMessage
+      hub.stats.lastEventAt = Date.now()
+      const sent = broadcast(clients, msg as ServerMessage)
+      console.log(`[hub] event ${msg.type} from ${sourceId ?? 'unknown'} → ${sent} client(s)`)
+      writeJson(res, 200, { ok: true, sent })
     })
     return
   }
