@@ -4,7 +4,11 @@
 
 1. 单元/脚本级：`npm run verify:pwa-stats --prefix server`
 2. 本地浏览器集成：`npm run verify:firefox-stats --prefix server`
-3. Android 浏览器真机：按本文档人工集中验证
+3. Relay 事件注入：`npm run verify:stats --prefix server`
+4. 真实 OpenCode 状态+工具：`npm run e2e:firefox-opencode --prefix server`
+5. 真实 OpenCode 工具审批：`npm run e2e:firefox-opencode-approval --prefix server`
+6. 5场景 prompt 矩阵：`npm run e2e:firefox-relay-prompt --prefix server`
+7. Android 浏览器真机：按本文档人工集中验证
 
 ## 测试前置条件
 
@@ -27,12 +31,12 @@ http://<PC-IP>:4097
 
 ## 测试范围
 
-本轮重点验证 stats 行为：
+本轮验证覆盖以下行为：
 
-- `Tools` 是否随工具调用递增。
-- `Errors` 是否随工具失败/错误日志递增，且不重复计数。
-- `Duration` 是否在 `THINKING` / `EXECUTING` 时递增，在 `IDLE` 时冻结。
-- 页面布局、日志滚动和状态回落没有回归。
+- **Stats**：`Tools` 随工具调用递增、`Errors` 随失败递增且不重复计数、`Duration` 活动时递增空闲时冻结。
+- **Permission**：工具审批弹窗（Allow/Deny）和回复闭环。
+- **Question**：多选问题弹窗（选择/Skip）和回复闭环。
+- **布局**：页面布局、日志滚动和状态回落没有回归。
 
 ## 测试步骤 A：基础连接
 
@@ -89,7 +93,32 @@ npm run verify:stats
 - 同一个失败工具不因 `Tool <name> failed` 日志重复增加 2 次。
 - 状态最终回到 `IDLE` 或进入 `ERROR`，取决于 OpenCode 事件类型。
 
-## 测试步骤 E：布局和长期运行
+## 测试步骤 E：Permission 审批
+
+1. 设置环境变量 `VIBE_FORCE_TOOL_APPROVAL=1`。
+2. 在 OpenCode 中启动一个会调用工具的任务。
+3. 观察手机页面弹出 permission overlay。
+
+预期：
+
+- overlay 显示工具名称和参数摘要。
+- 点击 **Allow Once** → 工具继续执行，overlay 消失。
+- 点击 **Deny** → 工具被拒绝，状态回到 IDLE。
+- 不操作 → 30 秒后超时，工具被拒绝。
+
+## 测试步骤 F：Question 回答
+
+1. 在 OpenCode 中触发一个会产生 `question.asked` 事件的会话。
+2. 观察手机页面弹出 question overlay。
+
+预期：
+
+- overlay 显示问题和选项列表。
+- 点击某个选项 → 回复发送，overlay 消失。
+- 点击 **Skip** → 回复标记为 skipped，overlay 消失。
+- 不操作 → 30 秒后超时，回复标记为 skipped。
+
+## 测试步骤 G：布局和长期运行
 
 1. 横屏持有手机。
 2. 连续触发多条日志，直到 Activity Log 可滚动。
@@ -100,6 +129,18 @@ npm run verify:stats
 - 左侧安灯面板不被日志挤到页面下方。
 - 右侧日志面板独立滚动。
 - 状态、stats row 始终可见。
+- Permission/Question overlay 不影响底层布局。
+
+## 测试步骤 H：无效/异常请求
+
+1. 通过 `/api/event` 注入一个 `requestType` 不是 `permission` 或 `question` 的请求。
+2. 观察手机页面。
+
+预期：
+
+- 不弹出任何 overlay。
+- 不崩溃。
+- 正常 status 消息仍可正常显示。
 
 ## 记录模板
 
@@ -114,7 +155,10 @@ A 基础连接：通过 / 失败，备注：
 B 注入 stats：通过 / 失败，Tools=，Errors=，Duration=，备注：
 C 真实 OpenCode 工具任务：通过 / 失败，备注：
 D 真实错误路径：通过 / 失败，备注：
-E 布局长期运行：通过 / 失败，备注：
+E Permission 审批：通过 / 失败，备注：
+F Question 回答：通过 / 失败，备注：
+G 布局长期运行：通过 / 失败，备注：
+H 无效请求：通过 / 失败，备注：
 
 截图/录像路径：
 遗留问题：

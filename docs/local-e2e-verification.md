@@ -1,6 +1,6 @@
 # Local E2E Verification Matrix
 
-本文档区分三类验证，避免把模拟测试误称为真实端到端测试。
+本文档区分各类验证，避免把模拟测试误称为真实端到端测试。
 
 ## 1. 单元/脚本级 stats 验证
 
@@ -40,7 +40,7 @@ npm run verify:firefox-stats --prefix E:\AI\vibe-companion\server
 - 不连接真实 Relay。
 - 不触发真实 OpenCode。
 
-## 3. 本地 Firefox + 真实 Relay + 真实 OpenCode 思考 E2E
+## 3. 本地 Firefox + 真实 Relay + 真实 OpenCode 思考+工具统计 E2E
 
 命令：
 
@@ -62,17 +62,41 @@ VIBE_RELAY_HOST=127.0.0.1:4097
 - 浏览器端观察真实 `opencode:*` source 的 status 消息。
 - 断言 Firefox 收到真实 OpenCode `THINKING`/`EXECUTING` 活动和后续 `IDLE`。
 - 断言 OpenCode CLI 输出期望文本。
+- **断言 Tools >= 1**：验证真实工具调用被 PWA stats 计数。
 
 最近本机通过结果示例：
 
 ```text
-ok real-opencode firefox status=IDLE tools=0 errors=0 duration=00:07 messages=104 session=ses_...
+ok real-opencode firefox status=THINKING tools=1 errors=0 duration=00:06 messages=140 session=ses_...
 Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
 ```
 
-注意：该用例是“思考/状态事件”E2E，不要求工具调用，也不要求权限确认。
+## 4. 本地 Firefox + 真实 OpenCode 强制工具审批 E2E
 
-## 4. 本地 Firefox + 真实 Relay Prompt 回答 E2E
+命令：
+
+```cmd
+npm run e2e:firefox-opencode-approval --prefix E:\AI\vibe-companion\server
+```
+
+覆盖：
+
+- 使用 `VIBE_FORCE_TOOL_APPROVAL=1` 环境变量启用 `tool.execute.before` hook。
+- OpenCode 每次执行工具前，plugin 通过 Relay 发送 permission 请求到 Firefox。
+- Firefox 显示 permission overlay，自动点击 Allow。
+- Plugin 收到 approved 回复，工具继续执行。
+- 断言 Firefox 收到 permission 消息、Tools >= 1、最终状态为 IDLE/COMPLETE。
+
+最近本机通过结果示例：
+
+```text
+ok force-tool-approval firefox permission=tool_1780329268352_588246407574e8 tools=1 errors=0 duration=00:05 messages=132
+Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
+```
+
+注意：此用例通过 `tool.execute.before` hook 强制拦截，不依赖 OpenCode 原生 `permission.asked` hook。OpenCode 默认将 bash 标记为 auto-allow，此 hook 绕过该机制实现手机端审批。
+
+## 5. 本地 Firefox + 真实 Relay Prompt 回答矩阵 E2E
 
 命令：
 
@@ -80,19 +104,29 @@ Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
 npm run e2e:firefox-relay-prompt --prefix E:\AI\vibe-companion\server
 ```
 
-覆盖：
+覆盖 5 个场景：
+
+| 场景 | 类型 | 行为 | 预期结果 |
+|------|------|------|----------|
+| permission-allow | permission | 点击 Allow Once | reply_ack accepted |
+| permission-reject | permission | 点击 Deny | reply_ack rejected |
+| question-answer | question | 点击第一个选项 | reply_ack accepted |
+| question-skip | question | 点击 Skip | reply_ack skipped |
+| wrong-request | (无效) | 发送未知 requestType | 无 overlay，无崩溃 |
+
+覆盖方式：
 
 - Firefox 真实连接 Relay `/ws`。
 - 脚本通过 `/api/register` 注册测试 adapter。
-- 脚本通过 `/api/event` 注入真实 pending `permission` 请求。
-- Firefox UI 显示 permission overlay 并点击 `Allow Once`。
-- Relay 返回 `reply_ack: accepted`。
+- 脚本通过 `/api/event` 注入真实 pending prompt 请求。
+- Firefox UI 显示对应 overlay 并执行操作。
+- Relay 返回正确的 `reply_ack`。
 - 脚本通过 `/api/replies?sourceId=...` 取到 queued reply。
 
 最近本机通过结果示例：
 
 ```text
-ok relay-prompt firefox request=per-... reply=once messages=3
+ok relay-prompt firefox scenarios=permission-allow,permission-reject,question-answer,question-skip,wrong-request queued=4 messages=10 acks=5
 Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
 ```
 
@@ -101,31 +135,21 @@ Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
 - 该用例不是 OpenCode 自己触发的 `permission.asked` 或 `question.asked`。
 - 它验证的是通用 Relay/PWA prompt 回答闭环。
 
-## 5. 当前未通过/未具备的真实 OpenCode Prompt E2E
+## 6. Relay `/api/event` 注入广播验证
 
-尝试过：
-
-```cmd
-opencode run --dir E:\AI\vibe-companion --model zhipuai-coding-plan/glm-4.6v --format json "Ask me a multiple choice clarification question before doing anything. Use the available question mechanism if one exists."
-```
-
-结果：OpenCode 只返回普通文本，没有触发 `question.asked` hook。
-
-也尝试过让 OpenCode 执行无害 shell 命令：
+命令：
 
 ```cmd
-opencode run --dir E:\AI\vibe-companion --model zhipuai-coding-plan/glm-4.6v --format json "Run this shell command exactly and report its output: echo VIBE_PERMISSION_E2E_OK"
+npm run verify:stats --prefix E:\AI\vibe-companion\server
 ```
 
-结果：OpenCode 直接执行 bash 工具并完成，没有触发 `permission.asked` hook。
+覆盖：
 
-因此目前不能声称“真实 OpenCode 提问/权限请求 → Firefox 回答”已通过。现有真实覆盖为：
+- 向 Relay `/api/event` 注入事件。
+- 验证 WebSocket 广播到连接的客户端。
+- 不是 UI 测试，只验证 Relay 传输层。
 
-- OpenCode 思考/status E2E：已通过。
-- Relay/PWA prompt answer E2E：已通过。
-- OpenCode 原生 question/permission hook E2E：未触发，待确认 OpenCode 配置或触发方式。
-
-## 6. 推荐本地验证顺序
+## 7. 推荐本地验证顺序
 
 ```cmd
 npm run typecheck --prefix E:\AI\vibe-companion\server
@@ -133,12 +157,19 @@ npm run lint --prefix E:\AI\vibe-companion\server
 npm run build --prefix E:\AI\vibe-companion\server
 npm run verify:pwa-stats --prefix E:\AI\vibe-companion\server
 npm run verify:firefox-stats --prefix E:\AI\vibe-companion\server
+npm run verify:stats --prefix E:\AI\vibe-companion\server
 npm run e2e:firefox-opencode --prefix E:\AI\vibe-companion\server
+npm run e2e:firefox-opencode-approval --prefix E:\AI\vibe-companion\server
 npm run e2e:firefox-relay-prompt --prefix E:\AI\vibe-companion\server
 ```
 
-`verify:stats` 仍可用于验证 Relay `/api/event` 注入和广播，但它不是 UI 测试：
+## 8. 验证覆盖矩阵总览
 
-```cmd
-npm run verify:stats --prefix E:\AI\vibe-companion\server
-```
+| 测试层级 | 真实浏览器 | 真实 Relay | 真实 OpenCode | 覆盖内容 |
+|----------|-----------|-----------|--------------|----------|
+| verify:pwa-stats | - | - | - | stats 计数逻辑 |
+| verify:firefox-stats | Firefox | - | - | stats DOM 渲染 |
+| verify:stats | - | Relay | - | 事件广播传输 |
+| e2e:firefox-opencode | Firefox | Relay | OpenCode | 状态+工具统计 |
+| e2e:firefox-opencode-approval | Firefox | Relay | OpenCode | 工具审批闭环 |
+| e2e:firefox-relay-prompt | Firefox | Relay | - | 5场景 prompt 回答 |
