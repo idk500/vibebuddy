@@ -12,6 +12,7 @@
     "lint:fix": "eslint src/ --ext .ts --fix",
     "verify:stats": "node scripts/verify-stats-events.mjs",
     "verify:pwa-stats": "node ../app/scripts/verify-legacy-stats.mjs",
+    "verify:firefox-stats": "node ../app/scripts/verify-firefox-stats.mjs",
     "start": "node dist/index.js"
   },
   "dependencies": {
