@@ -14,6 +14,7 @@
     "verify:pwa-stats": "node ../app/scripts/verify-legacy-stats.mjs",
     "verify:firefox-stats": "node ../app/scripts/verify-firefox-stats.mjs",
     "e2e:firefox-opencode": "node ../app/scripts/e2e-firefox-opencode-run.mjs",
+    "e2e:firefox-opencode-approval": "node ../app/scripts/e2e-firefox-opencode-tool-approval.mjs",
     "e2e:firefox-relay-prompt": "node ../app/scripts/e2e-firefox-relay-prompt.mjs",
     "start": "node dist/index.js"
   },

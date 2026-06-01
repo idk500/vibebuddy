@@ -5,6 +5,7 @@ const RELAY_BASE = "http://" + RELAY_HOST
 const REQUEST_TIMEOUT_MS = Number(env("VIBE_PERMISSION_TIMEOUT_MS") || "120000")
 const POLL_INTERVAL_MS = Number(env("VIBE_REPLY_POLL_INTERVAL_MS") || "500")
 const REGISTER_INTERVAL_MS = Number(env("VIBE_REGISTER_INTERVAL_MS") || "15000")
+const FORCE_TOOL_APPROVAL = env("VIBE_FORCE_TOOL_APPROVAL") === "1" || env("VIBE_FORCE_TOOL_APPROVAL") === "true"
 
 function env(name) {
   try { return globalThis.process && globalThis.process.env && globalThis.process.env[name] } catch { return undefined }
@@ -194,6 +195,19 @@ function permissionMessageFromInput(input, sessionId) {
   }
 }
 
+function toolApprovalMessageFromInput(input, sessionId) {
+  const tool = input && (input.tool || input.name || input.toolName || (input.part && (input.part.tool || input.part.name)) || (input.call && (input.call.tool || input.call.name))) || "tool"
+  const title = input && (input.title || input.description || (input.state && input.state.title) || (input.part && input.part.title))
+  return {
+    type: "permission",
+    id: requestId("tool", input),
+    sessionID: sessionId,
+    tool: tool,
+    message: title || "Allow tool execution: " + tool,
+    patterns: input && input.patterns,
+  }
+}
+
 async function postJson(path, msg) {
   try {
     const res = await fetch(RELAY_BASE + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(msg) })
@@ -261,6 +275,18 @@ async function handlePermissionAsk(input, output) {
   output.status = "allow"
 }
 
+async function handleToolExecuteBefore(input, output) {
+  if (!FORCE_TOOL_APPROVAL) return
+  const sessionId = normalizeSessionId(input)
+  const msg = withSource(toolApprovalMessageFromInput(input, sessionId), sessionId)
+  await sendToRelay([msg, withSource({ type: "log", level: "warn", message: "Tool approval waiting on phone: " + msg.tool, ts: now() }, sessionId)])
+
+  const reply = await waitForPermissionReply(msg.id, now() + REQUEST_TIMEOUT_MS)
+  if (!reply || reply.reply === "reject") {
+    throw new Error("Tool execution denied by Vibe Companion")
+  }
+}
+
 export const VibeCompanion = async (input) => {
   const serverUrl = input && input.serverUrl
   const ocUrl = serverUrl ? serverUrl.toString() : ""
@@ -276,6 +302,9 @@ export const VibeCompanion = async (input) => {
     },
     "permission.ask": async (input, output) => {
       await handlePermissionAsk(input, output)
+    },
+    "tool.execute.before": async (input, output) => {
+      await handleToolExecuteBefore(input, output)
     },
   }
 }

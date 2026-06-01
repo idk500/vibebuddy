@@ -536,6 +536,7 @@
         handleWSStateChange: handleWSStateChange,
         renderStatsTick: renderStatsTick,
         resetStats: resetStats,
+        sendTestMessage: function (msg) { return ws && ws.send(msg) },
         getStats: function () {
           return {
             key: statsState.key,
