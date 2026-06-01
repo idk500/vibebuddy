@@ -488,6 +488,7 @@
   }
 
   function detectServerHost() {
+    if (window.__VIBE_TEST_SERVER_HOST__) return window.__VIBE_TEST_SERVER_HOST__
     var loc = window.location
     if ((loc.protocol === 'http:' && loc.port && loc.port !== '80') || (loc.protocol === 'https:' && loc.port && loc.port !== '443')) return loc.host
     return null
@@ -592,6 +593,9 @@
   }
 
   function handleWSMessage(msg) {
+    if (window.__VIBE_TEST_ON_MESSAGE__) {
+      try { window.__VIBE_TEST_ON_MESSAGE__(msg) } catch (err) { console.error('[test] message observer failed:', err) }
+    }
     var type = msg.type
     if (type === 'connected') {
       if (msg.sessionId) sessionLabel.textContent = 'Session: ' + String(msg.sessionId).slice(0, 8)
