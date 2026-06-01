@@ -529,6 +529,23 @@
     updateClock()
     setInterval(updateClock, 30000)
     andon.reset()
+    if (window.__VIBE_TEST_MODE__) {
+      window.__vibeTest = {
+        handleWSMessage: handleWSMessage,
+        handleWSStateChange: handleWSStateChange,
+        renderStatsTick: renderStatsTick,
+        resetStats: resetStats,
+        getStats: function () {
+          return {
+            key: statsState.key,
+            elapsed: currentDuration(),
+            active: statsState.active,
+            toolCount: statsState.toolCount,
+            errorCount: statsState.errorCount
+          }
+        }
+      }
+    }
     console.log('[app] VibeCoding Companion legacy app initialized')
   }
 
