@@ -2,9 +2,9 @@
 
 ## 项目概述
 
-VibeCoding Companion — 老旧安卓手机上的 AI 编码辅助指示器 + 语音终端。
+VibeBuddy — 将闲置设备变为 AI 编码辅助指示器 + 远程确认终端。
 
-将闲置安卓手机变为 PC 端 AI 编码工具（OpenCode 等）的安灯状态看板、远程确认终端和语音输入中继。
+将手机或其他终端变为 PC 端 AI 编码工具（OpenCode 等）的安灯状态看板、远程确认终端和语音输入中继。
 
 - Phone: PWA (纯 HTML/CSS/JS, 零构建步骤)
 - Server: Node.js + TypeScript + ws

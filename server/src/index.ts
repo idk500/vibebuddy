@@ -77,7 +77,7 @@ function pendingKey(sourceId: string, requestId: string): string {
 // ── Main ────────────────────────────────────────────────
 
 export function main(config: ServerConfig = DEFAULT_CONFIG): void {
-  console.log(`[vibe-companion] Starting server...`)
+  console.log(`[vibebuddy] Starting server...`)
   console.log(`  Port:       ${config.port}`)
   console.log(`  OpenCode:   ${config.opencodeUrl}`)
   console.log(`  Static dir: ${config.staticDir ?? '(disabled)'}`)
@@ -125,7 +125,7 @@ export function main(config: ServerConfig = DEFAULT_CONFIG): void {
     // Send connected message
     const connected: ServerMessage = {
       type: 'connected',
-      serverVersion: '0.1.0',
+      serverVersion: '0.1.0',  // VibeBuddy
       sessionId: null,
     }
     ws.send(JSON.stringify(connected))
@@ -186,9 +186,9 @@ export function main(config: ServerConfig = DEFAULT_CONFIG): void {
 
   // Start HTTP server FIRST (don't block on OpenCode connection)
   httpServer.listen(config.port, '0.0.0.0', () => {
-    console.log(`[vibe-companion] Ready at http://0.0.0.0:${config.port}`)
-    console.log(`[vibe-companion] WebSocket at ws://0.0.0.0:${config.port}/ws`)
-    console.log(`[vibe-companion] Open PWA on phone: http://<PC-IP>:${config.port}`)
+    console.log(`[vibebuddy] Ready at http://0.0.0.0:${config.port}`)
+    console.log(`[vibebuddy] WebSocket at ws://0.0.0.0:${config.port}/ws`)
+    console.log(`[vibebuddy] Open PWA on phone: http://<PC-IP>:${config.port}`)
   })
 
   // Connect to OpenCode event stream in background (non-blocking)
@@ -605,6 +605,6 @@ function handleBinaryMessage(_data: Buffer, _ws: WebSocket): void {
 try {
   main()
 } catch (err) {
-  console.error('[vibe-companion] Fatal:', err)
+  console.error('[vibebuddy] Fatal:', err)
   process.exit(1)
 }

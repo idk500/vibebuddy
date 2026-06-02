@@ -1,7 +1,7 @@
 {
   "name": "vibe-companion-server",
   "version": "0.1.0",
-  "description": "VibeCoding Companion Relay Server — bridges OpenCode events to phone PWA",
+  "description": "VibeBuddy Relay Server — bridges AI coding tool events to companion displays",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

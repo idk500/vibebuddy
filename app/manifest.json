@@ -1,15 +1,15 @@
 {
-  "name": "VibeCoding Companion",
-  "short_name": "VibeCompanion",
-  "description": "AI coding status Andon board + voice terminal for Android",
+  "name": "VibeBuddy",
+  "short_name": "VibeBuddy",
+  "description": "Turn your phone into an AI coding companion display",
   "start_url": "/",
   "display": "fullscreen",
   "orientation": "landscape",
   "background_color": "#0f172a",
-  "theme_color": "#0f172a",
+  "theme_color": "#6366F1",
   "icons": [
     {
-      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>",
+      "src": "logo.svg",
       "sizes": "any",
       "type": "image/svg+xml"
     }

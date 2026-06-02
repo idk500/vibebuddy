@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0server"
 
 echo ================================================
-echo  VibeCoding Companion - PC Relay Hub
+echo  VibeBuddy - PC Relay Hub
 echo ================================================
 echo.
 echo Project: %~dp0

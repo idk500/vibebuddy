@@ -1,171 +1,162 @@
-# VibeCoding Companion
+<p align="center">
+  <img src="app/logo.svg" width="128" height="128" alt="VibeBuddy logo">
+</p>
 
-VibeCoding Companion turns an old Android phone into a web-first companion terminal for PC AI coding tools.
+<h1 align="center">VibeBuddy</h1>
 
-Current Phase 1.5 scope:
+<p align="center">
+  <strong>Turn any device into an AI coding companion display</strong>
+</p>
 
-- Andon-style status display for AI coding sessions.
-- Remote prompt and permission confirmation from a phone/PWA.
-- Multi-source Relay Hub protocol for OpenCode now and Claude Code/Kilo/ZCode later.
-- OpenCode plugin path for real TUI events and `permission.ask` approval loop.
+<p align="center">
+  <img src="https://img.shields.io/badge/status-v0.1.0%20milestone-6366F1" alt="version">
+  <img src="https://img.shields.io/badge/platform-Android%20%7B6%2B%7D-green" alt="platform">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="license">
+  <img src="https://img.shields.io/badge/node-%3E%3D18-339933" alt="node">
+</p>
 
-Target devices:
+---
 
-- Minimum: Android 6+ / Chrome 53+.
-- Layout: landscape-first.
-- Frontend: plain HTML/CSS/JS, no build step.
-- Server: Node.js + TypeScript + `ws`.
+VibeBuddy repurposes an old phone (or any browser) as a real-time status display for AI coding tools on your PC. Think of it as an **andon board** for your coding sessions — see what the AI is thinking, what tools it's running, and approve permissions directly from your phone.
 
-## Quick start
+**How it works:**
 
-### 1. Start the PC relay
+```
+┌─────────────┐       WiFi        ┌──────────────────┐       HTTP       ┌──────────────┐
+│   Phone /   │ ◄── WebSocket ──► │  Relay Hub :4097 │ ◄──────────────► │  OpenCode /  │
+│   Browser   │                   │     (PC)         │                  │  AI Tool     │
+└─────────────┘                   └──────────────────┘                  └──────────────┘
+```
+
+## Features
+
+- **Andon display** — real-time status: THINKING / EXECUTING / IDLE / ERROR
+- **Tool tracking** — see which tools the AI calls, with live counters
+- **Remote approval** — approve or deny tool permissions from your phone
+- **Duration timer** — track how long each session takes
+- **Activity log** — scrollable event history
+- **Zero build step** — plain HTML/CSS/JS, works on Android 6+
+- **Multi-tool protocol** — works with OpenCode today, extensible to Claude Code, ZCode, etc.
+
+## Quick Start
+
+### 1. Start the relay on your PC
 
 ```cmd
-cd /d E:\AI\vibe-companion\server
+cd server
 npm install
 npm run dev
 ```
 
-Default relay URL:
+The relay starts at `http://localhost:4097`.
 
-```text
-http://127.0.0.1:4097/
-```
+Or double-click `Start VibeBuddy.bat` (Windows).
 
-Phone URL on the same WiFi, for example:
+### 2. Open on your phone
 
-```text
-http://<PC-LAN-IP>:4097/
-```
-
-Find your LAN IP on Windows:
+Find your PC's LAN IP:
 
 ```cmd
-ipconfig | findstr /i "IPv4"
+ipconfig | findstr "IPv4"
 ```
 
-### 2. Open the PWA on the phone
+Open `http://<PC-IP>:4097` in your phone browser. The page auto-connects.
 
-Open the relay URL in the phone browser. If the page is served by the relay it auto-connects to the current host. Otherwise enter `PC-IP:4097` manually.
+### 3. Connect your AI tool
 
-### 3. Use with OpenCode
+For **OpenCode**, install the plugin:
 
-The OpenCode plugin should be installed under:
-
-```text
-E:\AI\.opencode\node_modules\vibe-companion-opencode-plugin\index.js
+```cmd
+cd E:\AI\.opencode
+npm install vibe-companion-opencode-plugin
 ```
 
-And configured from `E:\AI\.opencode\opencode.json`:
+Configure `opencode.json`:
 
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    "./node_modules/vibe-companion-opencode-plugin/index.js"
-  ]
+  "plugin": ["./node_modules/vibe-companion-opencode-plugin/index.js"]
 }
 ```
 
-When OpenCode loads the plugin, the plugin registers a source with the relay and forwards events to the phone UI. For OpenCode `permission.ask`, the plugin waits for the phone reply and then sets the original hook output to `allow` or `deny`.
+When OpenCode starts a session, VibeBuddy shows live status on your phone.
+
+## OpenCode Plugin Features
+
+| Feature | How it works |
+|---------|-------------|
+| Status events | Maps OpenCode events to THINKING/EXECUTING/IDLE |
+| Tool tracking | Counts tool starts, failures, and completions |
+| Permission approval | Intercepts `permission.ask` → phone → Allow/Deny |
+| Forced tool approval | Set `VIBE_FORCE_TOOL_APPROVAL=1` to require phone approval for every tool call |
+| Question answering | Shows multiple-choice questions on phone |
 
 ## Architecture
 
-```text
-Android Phone / PWA
-  - Andon UI
-  - Prompt UI
-  - ACK feedback
-        ⇅ WebSocket
-PC Relay Hub :4097
-  - source registry
-  - pending request registry
-  - per-source reply queues
-  - reply ACK broadcast
-        ⇅ HTTP Adapter API
-Adapters / tools
-  - OpenCode plugin
-  - future Claude Code adapter
-  - future Kilo adapter
-  - future ZCode adapter
+```
+app/                    # PWA — phone companion display
+  index.html            # single-page app
+  css/main.css          # styles + andon theme
+  js/legacy-app.js      # main app logic
+  logo.svg              # VibeBuddy logo
+  manifest.json         # PWA manifest
+
+server/                 # PC relay hub
+  src/index.ts          # HTTP + WebSocket server
+  src/types.ts          # shared types
+  package.json          # scripts and deps
+
+opencode-plugin/        # OpenCode adapter plugin
+  index.js              # event hooks + permission bridge
+
+docs/                   # documentation
 ```
 
-Important identifiers:
+## Verification
 
-| Name | Meaning |
-|------|---------|
-| `sourceId` | One adapter/tool instance, e.g. one OpenCode plugin process |
-| `sessionId` | One tool session/conversation/task |
-| `requestId` | One permission/question request |
-| `ackId` | One phone reply acknowledgement correlation ID |
+VibeBuddy has 6 levels of automated testing:
 
-Remote approval flow:
+| Level | What it tests | Command |
+|-------|--------------|---------|
+| VM unit | Stats counting logic | `npm run verify:pwa-stats` |
+| Firefox synthetic | Real browser DOM rendering | `npm run verify:firefox-stats` |
+| Relay injection | Event broadcast transport | `npm run verify:stats` |
+| Real OpenCode | Live AI session + tool stats | `npm run e2e:firefox-opencode` |
+| Tool approval | Forced permission approval | `npm run e2e:firefox-opencode-approval` |
+| Prompt matrix | 5-scenario reply isolation | `npm run e2e:firefox-relay-prompt` |
 
-```text
-OpenCode permission.ask
-  → plugin POST /api/event permission
-  → Relay Hub stores pending request and broadcasts to PWA
-  → user taps Allow/Reject on phone
-  → PWA sends WS permission_reply with sourceId/sessionId/requestID/ackId
-  → Relay Hub queues reply for the same source and broadcasts reply_ack
-  → plugin polls /api/replies and resolves permission.ask
-```
+All run headless on Windows + Firefox. See [docs/local-e2e-verification.md](docs/local-e2e-verification.md).
 
-## Project layout
+## Configuration
 
-```text
-vibe-companion/
-├── README.md
-├── AGENTS.md
-├── app/                     # Phone PWA, no build step
-│   ├── index.html
-│   ├── css/main.css
-│   └── js/*.js
-├── docs/
-│   ├── requirements.md      # SYS.1/SYS.2 requirements
-│   ├── architecture.md      # SYS.3/SWE.2 architecture
-│   ├── plan.md              # phase plan
-│   ├── operations.md        # runbook and troubleshooting
-│   ├── protocol.md          # Relay Hub adapter protocol
-│   └── acceptance-phase-1.5.md
-├── opencode-plugin/         # OpenCode adapter plugin source
-└── server/                  # PC Relay Hub
-    ├── src/index.ts
-    ├── src/types.ts
-    └── package.json
-```
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `VIBE_PORT` | `4097` | Relay HTTP/WS port |
+| `VIBE_AUTH_TOKEN` | (none) | Optional auth token |
+| `VIBE_STATUS_SETTLE_MS` | `20000` | Auto-settle inactive sessions |
+| `VIBE_REQUEST_TTL_MS` | `120000` | Permission/question timeout |
+| `VIBE_FORCE_TOOL_APPROVAL` | (none) | Set `1` to force phone approval for every tool |
 
-## Common commands
+## Documentation
 
-```cmd
-cd /d E:\AI\vibe-companion\server
+- [Requirements](docs/requirements.md) — product and system requirements
+- [Architecture](docs/architecture.md) — design decisions and data flow
+- [Protocol](docs/protocol.md) — Relay Hub HTTP/WebSocket protocol spec
+- [Operations](docs/operations.md) — runbook and troubleshooting
+- [Verification Matrix](docs/local-e2e-verification.md) — test levels and results
+- [Android Test Plan](docs/android-browser-test-plan.md) — device acceptance steps
 
-npm run dev          # run relay in watch mode
-npm run build        # compile TypeScript to dist/
-npm run typecheck    # TypeScript check without output
-npm run lint         # ESLint server sources
-```
+## Roadmap
 
-Git baseline:
+- [x] Single-session andon display
+- [x] Remote permission approval
+- [x] OpenCode plugin with event + permission hooks
+- [x] 6-level automated testing
+- [ ] Multi-session support (switch between concurrent AI sessions)
+- [ ] Desktop/browser terminal (not just phone)
+- [ ] Voice input relay (phone mic → PC)
+- [ ] Camera/OCR capture
 
-```cmd
-cd /d E:\AI\vibe-companion
-git log --oneline -3
-git status --short
-```
+## License
 
-## Documentation map
-
-- `docs/requirements.md` — product/system requirements.
-- `docs/architecture.md` — architecture and major design decisions.
-- `docs/plan.md` — phase plan and acceptance criteria.
-- `docs/protocol.md` — Relay Hub HTTP/WebSocket protocol.
-- `docs/operations.md` — how to start, verify, install, and troubleshoot.
-- `docs/acceptance-phase-1.5.md` — validation evidence for current closed-loop implementation.
-
-## Current known limitations
-
-- Phase 2 voice input is planned but not implemented as a complete relay path.
-- OpenCode `question.asked` is source-bound and ACKed at the relay/UI level, but true synchronous resolution depends on OpenCode exposing an appropriate hook/API.
-- No authentication is enabled by default; use only on trusted LAN until token pairing is added.
-- Relay state is in memory and resets on restart.
+MIT
