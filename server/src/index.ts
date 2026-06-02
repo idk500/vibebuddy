@@ -7,7 +7,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readFileSync, existsSync, statSync } from 'node:fs'
-import { join, extname } from 'node:path'
+import { join, extname, resolve, sep } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type {
   AdapterReply,
@@ -164,8 +164,24 @@ export function main(config: ServerConfig = DEFAULT_CONFIG): void {
     }
   }, 30_000)
 
+  // Cleanup expired pendingRequests and stale replyQueues every 60s
+  const cleanupInterval = setInterval(() => {
+    const now = Date.now()
+    for (const [key, pending] of hub.pendingRequests) {
+      if (pending.expiresAt < now) {
+        hub.pendingRequests.delete(key)
+      }
+    }
+    for (const [sourceId] of hub.replyQueues) {
+      if (!hub.sources.has(sourceId)) {
+        hub.replyQueues.delete(sourceId)
+      }
+    }
+  }, 60_000)
+
   wss.on('close', () => {
     clearInterval(pingInterval)
+    clearInterval(cleanupInterval)
   })
 
   // Start HTTP server FIRST (don't block on OpenCode connection)
@@ -359,11 +375,11 @@ function handleHttpRequest(
     return
   }
 
-  // Security: prevent path traversal
-  let filePath = join(config.staticDir, urlPath === '/' ? 'index.html' : urlPath)
+  // Security: prevent path traversal using resolve + normalize
+  const normalizedStatic = resolve(config.staticDir)
+  let filePath = resolve(normalizedStatic, urlPath === '/' ? 'index.html' : urlPath)
 
-  // Normalize and check it's within staticDir
-  if (!filePath.startsWith(config.staticDir)) {
+  if (!filePath.startsWith(normalizedStatic + sep) && filePath !== normalizedStatic) {
     res.writeHead(403, { 'Content-Type': 'text/plain' })
     res.end('Forbidden')
     return

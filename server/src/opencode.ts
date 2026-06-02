@@ -65,8 +65,9 @@ export function createOpenCodeRelay(opencodeUrl: string): OpenCodeRelay {
       baseUrl: opencodeUrl,
     })
 
-    // Subscribe to global SSE event stream
-    const result = await client.event.subscribe()
+    const result = await client.event.subscribe({
+      signal: abortController.signal,
+    })
 
     connected = true
     retryAttempt = 0
@@ -374,14 +375,28 @@ export function createOpenCodeRelay(opencodeUrl: string): OpenCodeRelay {
         break
       }
 
-      default:
-        // Log unhandled event types for debugging
-        results.push({
-          type: 'log',
-          level: 'info',
-          message: `[${eventType}]`,
-          ts: Date.now(),
-        })
+      default: {
+        const eventTypeLower = eventType.toLowerCase()
+        if (eventTypeLower.includes('tool')) {
+          results.push({
+            type: 'status',
+            status: 'EXECUTING',
+            task: eventType,
+            duration: 0,
+            toolCount: 0,
+            errorCount: 0,
+          })
+        } else if (eventTypeLower.includes('idle') || eventTypeLower.includes('complete')) {
+          results.push({
+            type: 'status',
+            status: 'IDLE',
+            task: eventType,
+            duration: 0,
+            toolCount: 0,
+            errorCount: 0,
+          })
+        }
+      }
     }
 
     return results

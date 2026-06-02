@@ -10,11 +10,7 @@ const APP_SHELL = [
   '/',
   '/index.html',
   '/css/main.css',
-  '/js/app.js',
-  '/js/ws.js',
-  '/js/andon.js',
-  '/js/log.js',
-  '/js/util.js',
+  '/js/legacy-app.js',
   '/manifest.json',
 ]
 
