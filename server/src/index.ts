@@ -1,5 +1,5 @@
 /**
- * VibeCoding Companion Relay Server — Entry Point
+ * VibeBuddy Relay Server — Entry Point
  *
  * Starts HTTP server (optional static file serving) + WebSocket server.
  * Connects to OpenCode via SDK and relays events to phone clients.
@@ -8,15 +8,19 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import { join, extname, resolve, sep } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type {
   AdapterReply,
+  AndonStatus,
   ClientMessage,
   PendingRequest,
   RegisterSourceRequest,
   ServerConfig,
   ServerMessage,
   SourceInstance,
+  SourceStatusSnapshot,
+  Terminal,
 } from './types.js'
 import { createOpenCodeRelay } from './opencode.js'
 
@@ -59,9 +63,12 @@ const MIME_TYPES: Record<string, string> = {
 
 interface RelayHubState {
   sources: Map<string, SourceInstance>
+  terminals: Map<string, Terminal>
   pendingRequests: Map<string, PendingRequest>
   replyQueues: Map<string, AdapterReply[]>
   statusTimers: Map<string, ReturnType<typeof setTimeout>>
+  /** Last status per sourceId|sessionId for snapshot replay */
+  lastStatuses: Map<string, SourceStatusSnapshot>
   stats: {
     startedAt: number
     eventsReceived: number
@@ -86,9 +93,11 @@ export function main(config: ServerConfig = DEFAULT_CONFIG): void {
   const clients = new Set<WebSocket>()
   const hub: RelayHubState = {
     sources: new Map<string, SourceInstance>(),
+    terminals: new Map<string, Terminal>(),
     pendingRequests: new Map<string, PendingRequest>(),
     replyQueues: new Map<string, AdapterReply[]>(),
     statusTimers: new Map<string, ReturnType<typeof setTimeout>>(),
+    lastStatuses: new Map<string, SourceStatusSnapshot>(),
     stats: {
       startedAt: Date.now(),
       eventsReceived: 0,
@@ -122,13 +131,29 @@ export function main(config: ServerConfig = DEFAULT_CONFIG): void {
 
     clients.add(ws)
 
-    // Send connected message
+    // Create Terminal identity
+    const terminalId = randomUUID()
+    const terminal: Terminal = {
+      id: terminalId,
+      ws,
+      type: 'unknown',
+      connectedAt: Date.now(),
+    }
+    hub.terminals.set(terminalId, terminal)
+
+    // Send connected message with terminalId
     const connected: ServerMessage = {
       type: 'connected',
       serverVersion: '0.1.0',  // VibeBuddy
       sessionId: null,
     }
-    ws.send(JSON.stringify(connected))
+    ws.send(JSON.stringify({ ...connected, terminalId }))
+
+    // Send state snapshot: all known sources + their last status
+    const snapshot = buildSnapshot(hub)
+    if (snapshot.sources.length > 0) {
+      ws.send(JSON.stringify(snapshot))
+    }
 
     // Handle incoming messages from phone
     ws.on('message', (data, isBinary) => {
@@ -136,17 +161,19 @@ export function main(config: ServerConfig = DEFAULT_CONFIG): void {
         handleBinaryMessage(data as Buffer, ws)
         return
       }
-      handleTextMessage(Buffer.isBuffer(data) ? data.toString('utf-8') : typeof data === 'string' ? data : '', ws, clients, hub)
+      handleTextMessage(Buffer.isBuffer(data) ? data.toString('utf-8') : typeof data === 'string' ? data : '', ws, clients, hub, terminalId)
     })
 
     ws.on('close', () => {
-      console.log(`[ws] Client disconnected: ${clientIp}`)
+      console.log(`[ws] Client disconnected: ${clientIp} (${terminalId})`)
       clients.delete(ws)
+      hub.terminals.delete(terminalId)
     })
 
     ws.on('error', (err) => {
       console.error(`[ws] Client error: ${err.message}`)
       clients.delete(ws)
+      hub.terminals.delete(terminalId)
     })
 
     // Keepalive ping
@@ -213,6 +240,48 @@ export function main(config: ServerConfig = DEFAULT_CONFIG): void {
   }).catch((err: unknown) => {
     console.warn(`[opencode] Connection failed: ${(err as Error).message}`)
     console.warn(`[opencode] Will retry in background...`)
+  })
+}
+
+// ── Snapshot builder ──────────────────────────────────────
+
+function buildSnapshot(hub: RelayHubState): import('./types.js').SnapshotMessage {
+  const sources: import('./types.js').SnapshotMessage['sources'] = []
+  for (const [sourceId, source] of hub.sources) {
+    // Find the most recent status for this source
+    let bestStatus: SourceStatusSnapshot | undefined
+    for (const [, snap] of hub.lastStatuses) {
+      if (snap.sourceId === sourceId) {
+        if (!bestStatus || snap.ts > bestStatus.ts) {
+          bestStatus = snap
+        }
+      }
+    }
+    sources.push({
+      sourceId,
+      tool: source.tool,
+      name: source.name,
+      status: bestStatus,
+    })
+  }
+  return { type: 'snapshot', sources }
+}
+
+function updateLastStatus(msg: Record<string, unknown>, hub: RelayHubState): void {
+  if (msg['type'] !== 'status') return
+  const sourceId = typeof msg['sourceId'] === 'string' ? msg['sourceId'] : ''
+  const sessionId = typeof msg['sessionId'] === 'string' ? msg['sessionId'] : typeof msg['sessionID'] === 'string' ? msg['sessionID'] as string : ''
+  if (!sourceId) return
+  const key = `${sourceId}|${sessionId}`
+  hub.lastStatuses.set(key, {
+    sourceId,
+    sessionId: sessionId || undefined,
+    status: (msg['status'] as AndonStatus) ?? 'IDLE',
+    task: (msg['task'] as string) ?? '',
+    duration: typeof msg['duration'] === 'number' ? msg['duration'] : 0,
+    toolCount: typeof msg['toolCount'] === 'number' ? msg['toolCount'] : 0,
+    errorCount: typeof msg['errorCount'] === 'number' ? msg['errorCount'] : 0,
+    ts: Date.now(),
   })
 }
 
@@ -326,6 +395,7 @@ function handleHttpRequest(
       hub.stats.eventsReceived++
       hub.stats.lastEvent = msg as ServerMessage
       hub.stats.lastEventAt = Date.now()
+      updateLastStatus(msg, hub)
       const sent = broadcast(clients, msg as ServerMessage)
       settleStatusAfterInactivity(msg, clients, hub)
       console.log(`[hub] event ${msg.type} from ${sourceId ?? 'unknown'} → ${sent} client(s)`)
@@ -410,12 +480,25 @@ function handleHttpRequest(
 
 // ── Client message handlers ─────────────────────────────
 
-function handleTextMessage(raw: string, _ws: WebSocket, clients: Set<WebSocket>, hub: RelayHubState): void {
+function handleTextMessage(raw: string, _ws: WebSocket, clients: Set<WebSocket>, hub: RelayHubState, terminalId: string): void {
   try {
-    const msg = JSON.parse(raw) as ClientMessage
-    console.log(`[ws] Received: ${msg.type}`)
+    const msg = JSON.parse(raw) as ClientMessage | { type: 'identify'; terminalType?: string; terminalName?: string }
+    console.log(`[ws] Received: ${(msg as Record<string, unknown>)['type']} from ${terminalId}`)
 
-    switch (msg.type) {
+    // Handle terminal identity
+    if ((msg as Record<string, unknown>)['type'] === 'identify') {
+      const idMsg = msg as { type: 'identify'; terminalType?: string; terminalName?: string }
+      const terminal = hub.terminals.get(terminalId)
+      if (terminal) {
+        terminal.type = (['phone', 'desktop', 'ide', 'browser'].includes(idMsg.terminalType ?? '') ? idMsg.terminalType : 'unknown') as Terminal['type']
+        terminal.name = idMsg.terminalName
+        console.log(`[ws] Terminal ${terminalId} identified as ${terminal.type} (${terminal.name ?? 'unnamed'})`)
+      }
+      return
+    }
+
+    const clientMsg = msg as ClientMessage
+    switch (clientMsg.type) {
       case 'voice_start':
         // Phase 2: handle voice start
         break
@@ -426,16 +509,16 @@ function handleTextMessage(raw: string, _ws: WebSocket, clients: Set<WebSocket>,
         // Handle commands (list_sessions, etc.)
         break
       case 'question_reply':
-        handleReplyMessage(msg, clients, hub)
+        handleReplyMessage(clientMsg, clients, hub)
         break
       case 'question_reject':
-        handleReplyMessage(msg, clients, hub)
+        handleReplyMessage(clientMsg, clients, hub)
         break
       case 'permission_reply':
-        handleReplyMessage(msg, clients, hub)
+        handleReplyMessage(clientMsg, clients, hub)
         break
       default:
-        console.warn(`[ws] Unknown message type: ${String((msg as Record<string, unknown>)['type'])}`)
+        console.warn(`[ws] Unknown message type: ${String((clientMsg as Record<string, unknown>)['type'])}`)
     }
   } catch {
     console.warn('[ws] Invalid JSON message')

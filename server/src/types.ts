@@ -1,6 +1,8 @@
 /**
- * Shared type definitions for VibeCoding Companion
+ * Shared type definitions for VibeBuddy
  */
+
+import type { WebSocket } from 'ws'
 
 // ── Andon Status ────────────────────────────────────────
 
@@ -96,7 +98,7 @@ export interface ReplyAckMessage {
 }
 
 /** Server → Phone messages (all variants) */
-export type ServerMessage = StatusUpdate | ToolEvent | LogEntry | ConnectedMessage | SourceMessage | QuestionMessage | PermissionMessage | ReplyAckMessage
+export type ServerMessage = StatusUpdate | ToolEvent | LogEntry | ConnectedMessage | SourceMessage | QuestionMessage | PermissionMessage | ReplyAckMessage | SnapshotMessage
 
 // ── Client → Server messages ────────────────────────────
 
@@ -210,4 +212,42 @@ export interface RegisterSourceRequest {
   serverUrl?: string
   cwd?: string
   capabilities?: string[]
+}
+
+// ── Terminal (connected display client) ─────────────────
+
+export interface Terminal {
+  /** Unique terminal ID, assigned on connect */
+  id: string
+  /** WebSocket connection */
+  ws: WebSocket
+  /** Client-reported type */
+  type: 'phone' | 'desktop' | 'ide' | 'browser' | 'unknown'
+  /** Client-reported name */
+  name?: string
+  /** When this terminal connected */
+  connectedAt: number
+}
+
+// ── State snapshot (sent on connect) ────────────────────
+
+export interface SourceStatusSnapshot {
+  sourceId: string
+  sessionId?: string
+  status: AndonStatus
+  task: string
+  duration: number
+  toolCount: number
+  errorCount: number
+  ts: number
+}
+
+export interface SnapshotMessage {
+  type: 'snapshot'
+  sources: Array<{
+    sourceId: string
+    tool: string
+    name: string
+    status?: SourceStatusSnapshot
+  }>
 }
