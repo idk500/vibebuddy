@@ -187,8 +187,39 @@ Polling drains the current queue for that source.
 ### 4.1 Connected
 
 ```json
-{"type":"connected","serverVersion":"0.1.0","sessionId":null}
+{"type":"connected","serverVersion":"0.1.0","sessionId":null,"terminalId":"550e8400-e29b-41d4-a716-446655440000"}
 ```
+
+`terminalId` is a UUID assigned by the server on connect. The terminal can send an `identify` message to report its type.
+
+### 4.2 State snapshot (on connect)
+
+Sent immediately after `connected` if any sources are registered:
+
+```json
+{
+  "type": "snapshot",
+  "sources": [
+    {
+      "sourceId": "opencode:1234:abcd",
+      "tool": "opencode",
+      "name": "OpenCode 1234",
+      "status": {
+        "sourceId": "opencode:1234:abcd",
+        "sessionId": "ses_1",
+        "status": "THINKING",
+        "task": "Generating response...",
+        "duration": 154000,
+        "toolCount": 3,
+        "errorCount": 0,
+        "ts": 1760000000000
+      }
+    }
+  ]
+}
+```
+
+This allows a reconnecting terminal to restore its display state without missing events.
 
 ### 4.2 Source status
 
@@ -231,7 +262,21 @@ ACK statuses:
 
 ## 5. WebSocket phone messages
 
-### 5.1 Permission reply
+### 5.1 Terminal identify
+
+Optional. Sent by the terminal after connecting to report its type:
+
+```json
+{
+  "type": "identify",
+  "terminalType": "phone",
+  "terminalName": "Redmi Note 12T Pro"
+}
+```
+
+Allowed `terminalType` values: `phone`, `desktop`, `ide`, `browser`.
+
+### 5.2 Permission reply
 
 ```json
 {

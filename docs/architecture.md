@@ -102,7 +102,7 @@ server/
 - **Adapter Hub 模式** — source/session/request/reply 均在内存注册并按 ID 路由
 - **安全默认值** — 权限请求超时或 adapter 断联时不自动允许
 
-### 2.3 Adapter Hub 内部模型 (Phase 1.5)
+### 2.3 Adapter Hub 内部模型 (Phase 1.5+)
 
 | 概念 | 标识 | 说明 |
 |------|------|------|
@@ -111,14 +111,18 @@ server/
 | Pending Request | `sourceId + requestId` | 等待手机回复的问题或权限请求 |
 | Reply | `ackId + sourceId + requestId` | 手机端发出的确认/拒绝，进入 source 专属队列 |
 | ACK | `reply_ack` | Relay Hub 对手机回复的处理结果：`accepted`/`failed`/`expired` |
+| Terminal | `terminalId` | 连接的显示终端（手机/桌面/IDE），连接时分配 UUID |
+| Status Snapshot | `sourceId + sessionId` | 每个 source|session 的最新状态快照，用于终端连接时回放 |
 
 Relay Hub 内存结构：
 
 ```ts
 sources: Map<sourceId, SourceInstance>
-sessions: Map<`${sourceId}:${sessionId}`, SessionState>
+terminals: Map<terminalId, Terminal>
 pendingRequests: Map<`${sourceId}:${requestId}`, PendingRequest>
 replyQueues: Map<sourceId, AdapterReply[]>
+statusTimers: Map<`${sourceId}:${sessionId}`, Timeout>
+lastStatuses: Map<`${sourceId}|${sessionId}`, SourceStatusSnapshot>
 ```
 
 ### 2.4 OpenCode 集成

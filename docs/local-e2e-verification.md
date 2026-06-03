@@ -149,7 +149,31 @@ npm run verify:stats --prefix E:\AI\vibe-companion\server
 - 验证 WebSocket 广播到连接的客户端。
 - 不是 UI 测试，只验证 Relay 传输层。
 
-## 7. 推荐本地验证顺序
+## 7. 本地 Firefox 多会话验证
+
+命令：
+
+```cmd
+npm run verify:firefox-multisource --prefix E:\AI\vibe-companion\server
+```
+
+覆盖（6 个检查点）：
+
+1. **独立 stats**：两个 source 各自维护 Tools/Errors，互不干扰
+2. **自动切换**：新 source 的 THINKING/EXECUTING 事件自动切换显示
+3. **日志过滤**：Activity Log 仅显示当前活跃 source 的日志
+4. **Source 选择器**：header 区域显示两个 source 按钮
+5. **非活跃 source 的 prompt**：permission overlay 即使来自非活跃 source 也正确弹出
+6. **切换保持**：切换回原 source 时 stats 保持不变
+
+最近本机通过结果示例：
+
+```text
+ok multi-source firefox checks=6 sources=2
+Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
+```
+
+## 8. 推荐本地验证顺序
 
 ```cmd
 npm run typecheck --prefix E:\AI\vibe-companion\server
@@ -158,18 +182,20 @@ npm run build --prefix E:\AI\vibe-companion\server
 npm run verify:pwa-stats --prefix E:\AI\vibe-companion\server
 npm run verify:firefox-stats --prefix E:\AI\vibe-companion\server
 npm run verify:stats --prefix E:\AI\vibe-companion\server
+npm run verify:firefox-multisource --prefix E:\AI\vibe-companion\server
 npm run e2e:firefox-opencode --prefix E:\AI\vibe-companion\server
 npm run e2e:firefox-opencode-approval --prefix E:\AI\vibe-companion\server
 npm run e2e:firefox-relay-prompt --prefix E:\AI\vibe-companion\server
 ```
 
-## 8. 验证覆盖矩阵总览
+## 9. 验证覆盖矩阵总览
 
 | 测试层级 | 真实浏览器 | 真实 Relay | 真实 OpenCode | 覆盖内容 |
 |----------|-----------|-----------|--------------|----------|
 | verify:pwa-stats | - | - | - | stats 计数逻辑 |
 | verify:firefox-stats | Firefox | - | - | stats DOM 渲染 |
 | verify:stats | - | Relay | - | 事件广播传输 |
+| verify:firefox-multisource | Firefox | - | - | 多会话隔离+切换 |
 | e2e:firefox-opencode | Firefox | Relay | OpenCode | 状态+工具统计 |
 | e2e:firefox-opencode-approval | Firefox | Relay | OpenCode | 工具审批闭环 |
 | e2e:firefox-relay-prompt | Firefox | Relay | - | 5场景 prompt 回答 |
