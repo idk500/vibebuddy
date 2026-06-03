@@ -653,7 +653,8 @@
     } else if (type === 'status') {
       handleStatsForStatus(msg)
       var key = statsKey(msg)
-      if (!activeSourceKey) {
+      // Auto-switch to new active source (THINKING/EXECUTING) or if no source selected yet
+      if (!activeSourceKey || (key !== activeSourceKey && (msg.status === 'THINKING' || msg.status === 'EXECUTING'))) {
         activeSourceKey = key
         updateSourceSelector()
       }
@@ -664,6 +665,11 @@
     } else if (type === 'tool') {
       handleStatsForTool(msg)
       var key = statsKey(msg)
+      // Auto-switch on tool started from a different source
+      if (!activeSourceKey || (key !== activeSourceKey && msg.status === 'started')) {
+        activeSourceKey = key
+        updateSourceSelector()
+      }
       if (key === activeSourceKey) {
         log.addToolEvent(msg)
         if (msg.status === 'started') andon.update(withLocalStats({ status: 'EXECUTING', sourceId: msg.sourceId, sessionId: msg.sessionId, task: msg.title || ('Running: ' + msg.name) }))
