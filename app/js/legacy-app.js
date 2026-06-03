@@ -1,4 +1,4 @@
-/* VibeCoding Companion — legacy browser app bundle (no modules, no private fields) */
+/* VibeBuddy — legacy browser app bundle (no modules, no private fields) */
 (function () {
   'use strict'
 
@@ -247,11 +247,19 @@
       this.settleTimer = null
     }
     if (status !== 'THINKING' && status !== 'EXECUTING') return
+    var capturedKey = activeSourceKey
     this.settleTimer = setTimeout(function () {
       self.settleTimer = null
       if (self.currentStatus === 'THINKING' || self.currentStatus === 'EXECUTING') {
-        pauseStats()
-        self.update(withLocalStats({ status: 'IDLE', task: 'No recent activity' }))
+        pauseStats(null)
+        var state = capturedKey ? getStats(capturedKey) : null
+        self.update({
+          status: 'IDLE',
+          task: 'No recent activity',
+          toolCount: state ? state.toolCount : 0,
+          errorCount: state ? state.errorCount : 0,
+          duration: state ? currentDurationFor(state) : 0
+        })
       }
     }, 25000)
   }
@@ -296,18 +304,34 @@
   var pendingPromptOverlays = {}
   var seenSources = {}
   var connected = false
-  var statsState = {
-    key: null,
-    startedAt: null,
-    elapsed: 0,
-    active: false,
-    timer: null,
-    toolCount: 0,
-    errorCount: 0,
-    countedTools: {},
-    failedTools: {},
-    statusErrorCounted: false,
-    activeTools: {}
+
+  // Multi-session: per-source stats map
+  var statsMap = {}           // key -> statsState object
+  var activeSourceKey = null  // currently displayed sourceId|sessionId
+  var globalStatsTimer = null
+
+  function makeStatsState(key) {
+    return {
+      key: key,
+      startedAt: null,
+      elapsed: 0,
+      active: false,
+      toolCount: 0,
+      errorCount: 0,
+      countedTools: {},
+      failedTools: {},
+      statusErrorCounted: false,
+      activeTools: {}
+    }
+  }
+
+  function getStats(key) {
+    if (!statsMap[key]) statsMap[key] = makeStatsState(key)
+    return statsMap[key]
+  }
+
+  function activeStats() {
+    return activeSourceKey ? getStats(activeSourceKey) : null
   }
 
   var connectScreen, andonScreen, serverUrlInput, connectBtn, connectStatus, connectionDot, sessionLabel, clock, disconnectBtn, fullscreenBtn
@@ -338,68 +362,71 @@
   }
 
   function resetStats(msg) {
-    statsState.key = msg ? statsKey(msg) : null
-    statsState.startedAt = null
-    statsState.elapsed = 0
-    statsState.active = false
-    statsState.toolCount = 0
-    statsState.errorCount = 0
-    statsState.countedTools = {}
-    statsState.failedTools = {}
-    statsState.statusErrorCounted = false
-    statsState.activeTools = {}
-    stopStatsTimer()
+    var key = msg ? statsKey(msg) : null
+    if (key) {
+      statsMap[key] = makeStatsState(key)
+    } else {
+      statsMap = {}
+    }
+    stopGlobalStatsTimer()
   }
 
   function ensureStatsSession(msg) {
     var key = statsKey(msg)
-    if (statsState.key !== key) resetStats(msg)
+    getStats(key) // creates if missing
   }
 
-  function currentDuration() {
-    if (!statsState.active || !statsState.startedAt) return statsState.elapsed
-    return statsState.elapsed + Math.max(0, Date.now() - statsState.startedAt)
+  function currentDurationFor(state) {
+    if (!state) return 0
+    if (!state.active || !state.startedAt) return state.elapsed
+    return state.elapsed + Math.max(0, Date.now() - state.startedAt)
   }
 
   function renderStatsTick() {
     if (!andon) return
+    var state = activeStats()
+    if (!state) return
     andon.update({
       status: andon.currentStatus || 'IDLE',
       settle: false,
-      duration: currentDuration(),
-      toolCount: statsState.toolCount,
-      errorCount: statsState.errorCount
+      duration: currentDurationFor(state),
+      toolCount: state.toolCount,
+      errorCount: state.errorCount
     })
   }
 
-  function startStatsTimer() {
-    if (statsState.timer) return
-    statsState.timer = setInterval(renderStatsTick, 1000)
+  function startGlobalStatsTimer() {
+    if (globalStatsTimer) return
+    globalStatsTimer = setInterval(renderStatsTick, 1000)
   }
 
-  function stopStatsTimer() {
-    if (statsState.timer) {
-      clearInterval(statsState.timer)
-      statsState.timer = null
+  function stopGlobalStatsTimer() {
+    if (globalStatsTimer) {
+      clearInterval(globalStatsTimer)
+      globalStatsTimer = null
     }
   }
 
   function startStats(msg) {
-    ensureStatsSession(msg)
-    if (!statsState.active) {
-      statsState.startedAt = Date.now()
-      statsState.active = true
+    var key = statsKey(msg)
+    var state = getStats(key)
+    if (!state.active) {
+      state.startedAt = Date.now()
+      state.active = true
     }
-    startStatsTimer()
+    if (key === activeSourceKey) startGlobalStatsTimer()
   }
 
-  function pauseStats() {
-    if (statsState.active) {
-      statsState.elapsed = currentDuration()
-      statsState.startedAt = null
-      statsState.active = false
+  function pauseStats(msg) {
+    var key = msg ? statsKey(msg) : activeSourceKey
+    if (!key) return
+    var state = getStats(key)
+    if (state.active) {
+      state.elapsed = currentDurationFor(state)
+      state.startedAt = null
+      state.active = false
     }
-    stopStatsTimer()
+    if (key === activeSourceKey) stopGlobalStatsTimer()
   }
 
   function shouldUseIncomingCount(value, localValue) {
@@ -407,30 +434,40 @@
   }
 
   function withLocalStats(msg) {
+    var key = statsKey(msg)
+    var state = getStats(key)
     var out = {}
-    var key
-    for (key in msg) out[key] = msg[key]
-    if (shouldUseIncomingCount(msg.toolCount, statsState.toolCount)) statsState.toolCount = Number(msg.toolCount)
-    if (shouldUseIncomingCount(msg.errorCount, statsState.errorCount)) statsState.errorCount = Number(msg.errorCount)
-    out.toolCount = statsState.toolCount
-    out.errorCount = statsState.errorCount
-    out.duration = currentDuration()
+    var k
+    for (k in msg) out[k] = msg[k]
+    if (shouldUseIncomingCount(msg.toolCount, state.toolCount)) state.toolCount = Number(msg.toolCount)
+    if (shouldUseIncomingCount(msg.errorCount, state.errorCount)) state.errorCount = Number(msg.errorCount)
+    out.toolCount = state.toolCount
+    out.errorCount = state.errorCount
+    out.duration = currentDurationFor(state)
     return out
   }
 
   function handleStatsForStatus(msg) {
-    ensureStatsSession(msg)
+    var key = statsKey(msg)
+    var state = getStats(key)
     var status = msg.status
-    if (status === 'THINKING' || status === 'EXECUTING') startStats(msg)
-    else if (status === 'ERROR') {
-      if (!statsState.statusErrorCounted) {
-        statsState.errorCount++
-        statsState.statusErrorCounted = true
+    if (status === 'THINKING' || status === 'EXECUTING') {
+      if (!state.active) {
+        state.startedAt = Date.now()
+        state.active = true
       }
-      pauseStats()
-    } else if (status === 'IDLE' || status === 'COMPLETE' || status === 'DISCONNECTED') pauseStats()
-    if (shouldUseIncomingCount(msg.toolCount, statsState.toolCount)) statsState.toolCount = Number(msg.toolCount)
-    if (shouldUseIncomingCount(msg.errorCount, statsState.errorCount)) statsState.errorCount = Number(msg.errorCount)
+      if (key === activeSourceKey) startGlobalStatsTimer()
+    } else if (status === 'ERROR') {
+      if (!state.statusErrorCounted) {
+        state.errorCount++
+        state.statusErrorCounted = true
+      }
+      pauseStats(msg)
+    } else if (status === 'IDLE' || status === 'COMPLETE' || status === 'DISCONNECTED') {
+      pauseStats(msg)
+    }
+    if (shouldUseIncomingCount(msg.toolCount, state.toolCount)) state.toolCount = Number(msg.toolCount)
+    if (shouldUseIncomingCount(msg.errorCount, state.errorCount)) state.errorCount = Number(msg.errorCount)
   }
 
   function toolEventKey(msg) {
@@ -443,48 +480,46 @@
   }
 
   function handleStatsForTool(msg) {
-    ensureStatsSession(msg)
-    var key = toolEventKey(msg)
+    var key = statsKey(msg)
+    var state = getStats(key)
+    var tKey = toolEventKey(msg)
     var nameKey = activeToolKey(msg)
     if (msg.status === 'started') {
-      if (!key || !statsState.countedTools[key]) {
-        if (key) statsState.countedTools[key] = true
-        statsState.activeTools[nameKey] = (statsState.activeTools[nameKey] || 0) + 1
-        statsState.toolCount++
+      if (!tKey || !state.countedTools[tKey]) {
+        if (tKey) state.countedTools[tKey] = true
+        state.activeTools[nameKey] = (state.activeTools[nameKey] || 0) + 1
+        state.toolCount++
       }
       startStats(msg)
     } else if (msg.status === 'failed') {
-      if (key && !statsState.countedTools[key]) {
-        statsState.countedTools[key] = true
-        statsState.toolCount++
-      } else if (!key && statsState.activeTools[nameKey] <= 0) {
-        statsState.toolCount++
+      if (tKey && !state.countedTools[tKey]) {
+        state.countedTools[tKey] = true
+        state.toolCount++
+      } else if (!tKey && state.activeTools[nameKey] <= 0) {
+        state.toolCount++
       }
-      if (statsState.activeTools[nameKey] > 0) {
-        statsState.activeTools[nameKey]--
-      }
-      if (!key || !statsState.failedTools[key]) {
-        if (key) statsState.failedTools[key] = true
-        statsState.errorCount++
+      if (state.activeTools[nameKey] > 0) state.activeTools[nameKey]--
+      if (!tKey || !state.failedTools[tKey]) {
+        if (tKey) state.failedTools[tKey] = true
+        state.errorCount++
       }
       startStats(msg)
     } else if (msg.status === 'completed') {
-      if (key && !statsState.countedTools[key]) {
-        statsState.countedTools[key] = true
-        statsState.toolCount++
-      } else if (!key && statsState.activeTools[nameKey] <= 0) {
-        statsState.toolCount++
+      if (tKey && !state.countedTools[tKey]) {
+        state.countedTools[tKey] = true
+        state.toolCount++
+      } else if (!tKey && state.activeTools[nameKey] <= 0) {
+        state.toolCount++
       }
-      if (statsState.activeTools[nameKey] > 0) {
-        statsState.activeTools[nameKey]--
-      }
+      if (state.activeTools[nameKey] > 0) state.activeTools[nameKey]--
     }
   }
 
   function handleStatsForLog(msg) {
     if (isNoisyLog(msg)) return
-    if (msg.sourceId || messageSessionId(msg) || !statsState.key) ensureStatsSession(msg)
-    if (msg.level === 'error' && !/^(Tool .+ failed|Session error)/.test(String(msg.message || ''))) statsState.errorCount++
+    var key = statsKey(msg)
+    var state = getStats(key)
+    if (msg.level === 'error' && !/^(Tool .+ failed|Session error)/.test(String(msg.message || ''))) state.errorCount++
   }
 
   function detectServerHost() {
@@ -538,17 +573,18 @@
         resetStats: resetStats,
         sendTestMessage: function (msg) { return ws && ws.send(msg) },
         getStats: function () {
+          var state = activeStats()
           return {
-            key: statsState.key,
-            elapsed: currentDuration(),
-            active: statsState.active,
-            toolCount: statsState.toolCount,
-            errorCount: statsState.errorCount
+            key: activeSourceKey,
+            elapsed: currentDurationFor(state),
+            active: state ? state.active : false,
+            toolCount: state ? state.toolCount : 0,
+            errorCount: state ? state.errorCount : 0
           }
         }
       }
     }
-    console.log('[app] VibeCoding Companion legacy app initialized')
+    console.log('[app] VibeBuddy legacy app initialized')
   }
 
   function handleConnect() {
@@ -567,6 +603,8 @@
     ws.disconnect()
     connected = false
     resetStats(null)
+    activeSourceKey = null
+    seenSources = {}
     andon.reset()
     log.clear()
     showScreen('connect')
@@ -600,26 +638,44 @@
     var type = msg.type
     if (type === 'connected') {
       if (msg.sessionId) sessionLabel.textContent = 'Session: ' + String(msg.sessionId).slice(0, 8)
+      if (msg.terminalId) console.log('[app] Terminal ID: ' + msg.terminalId)
       console.log('[app] Server version: ' + msg.serverVersion)
+    } else if (type === 'snapshot') {
+      handleSnapshot(msg)
     } else if (type === 'source') {
-      sessionLabel.textContent = (msg.tool || 'Source') + ': ' + String(msg.sourceId || '').slice(0, 16)
       if (!seenSources[msg.sourceId]) {
-        seenSources[msg.sourceId] = true
+        seenSources[msg.sourceId] = msg
         log.addLogEntry({ level: 'info', message: 'Source registered: ' + (msg.name || msg.sourceId), ts: msg.ts || Date.now() })
+      } else {
+        seenSources[msg.sourceId] = msg
       }
+      updateSourceSelector()
     } else if (type === 'status') {
       handleStatsForStatus(msg)
-      andon.update(withLocalStats(msg))
-      if (msg.sessionId) sessionLabel.textContent = 'Session: ' + String(msg.sessionId).slice(0, 8)
+      var key = statsKey(msg)
+      if (!activeSourceKey) {
+        activeSourceKey = key
+        updateSourceSelector()
+      }
+      if (key === activeSourceKey) {
+        andon.update(withLocalStats(msg))
+        if (msg.sessionId) sessionLabel.textContent = 'Session: ' + String(msg.sessionId).slice(0, 8)
+      }
     } else if (type === 'tool') {
       handleStatsForTool(msg)
-      log.addToolEvent(msg)
-      if (msg.status === 'started') andon.update(withLocalStats({ status: 'EXECUTING', sourceId: msg.sourceId, sessionId: msg.sessionId, task: msg.title || ('Running: ' + msg.name) }))
-      else renderStatsTick()
+      var key = statsKey(msg)
+      if (key === activeSourceKey) {
+        log.addToolEvent(msg)
+        if (msg.status === 'started') andon.update(withLocalStats({ status: 'EXECUTING', sourceId: msg.sourceId, sessionId: msg.sessionId, task: msg.title || ('Running: ' + msg.name) }))
+        else renderStatsTick()
+      }
     } else if (type === 'log') {
       handleStatsForLog(msg)
-      if (!isNoisyLog(msg)) log.addLogEntry(msg)
-      if (msg.level === 'error') renderStatsTick()
+      var key = statsKey(msg)
+      if (key === activeSourceKey) {
+        if (!isNoisyLog(msg)) log.addLogEntry(msg)
+        if (msg.level === 'error') renderStatsTick()
+      }
     } else if (type === 'question') {
       log.addLogEntry({ level: 'warn', message: 'Question: ' + (msg.questions && msg.questions[0] ? msg.questions[0].header || '' : ''), ts: Date.now() })
       showQuestionOverlay(msg)
@@ -631,6 +687,77 @@
     } else {
       console.log('[app] Unknown message type: ' + type, msg)
     }
+  }
+
+  function handleSnapshot(msg) {
+    var sources = msg.sources || []
+    for (var i = 0; i < sources.length; i++) {
+      var src = sources[i]
+      seenSources[src.sourceId] = src
+      if (src.status) {
+        var key = src.sourceId + '|' + (src.status.sessionId || 'session')
+        var state = getStats(key)
+        if (shouldUseIncomingCount(src.status.toolCount, state.toolCount)) state.toolCount = src.status.toolCount
+        if (shouldUseIncomingCount(src.status.errorCount, state.errorCount)) state.errorCount = src.status.errorCount
+      }
+    }
+    if (!activeSourceKey && sources.length > 0) {
+      var first = sources[0]
+      activeSourceKey = first.sourceId + '|' + (first.status && first.status.sessionId ? first.status.sessionId : 'session')
+      if (first.status) {
+        andon.update(withLocalStats(first.status))
+      }
+    }
+    updateSourceSelector()
+  }
+
+  function updateSourceSelector() {
+    var container = document.getElementById('source-selector')
+    if (!container) return
+    container.innerHTML = ''
+    var sourceIds = Object.keys(seenSources)
+    if (sourceIds.length === 0) {
+      container.style.display = 'none'
+      return
+    }
+    container.style.display = 'flex'
+    for (var i = 0; i < sourceIds.length; i++) {
+      (function (sid) {
+        var src = seenSources[sid]
+        var btn = createElement('button', {
+          className: 'source-btn' + (activeSourceKey && activeSourceKey.indexOf(sid) === 0 ? ' source-btn-active' : '')
+        }, src.name || sid.slice(0, 12))
+        btn.title = src.tool + ': ' + sid
+        btn.onclick = function () { switchToSource(sid) }
+        container.appendChild(btn)
+      })(sourceIds[i])
+    }
+  }
+
+  function switchToSource(sourceId) {
+    // Find best matching key in statsMap
+    var bestKey = null
+    var bestTs = 0
+    for (var key in statsMap) {
+      if (key.indexOf(sourceId + '|') === 0) {
+        var state = statsMap[key]
+        var ts = state.active ? Date.now() : state.elapsed
+        if (ts > bestTs) { bestTs = ts; bestKey = key }
+      }
+    }
+    if (!bestKey) bestKey = sourceId + '|session'
+    activeSourceKey = bestKey
+    // Re-render with this source's state
+    var state = getStats(bestKey)
+    andon.update({
+      status: state.active ? 'EXECUTING' : 'IDLE',
+      task: '',
+      toolCount: state.toolCount,
+      errorCount: state.errorCount,
+      duration: currentDurationFor(state)
+    })
+    updateSourceSelector()
+    sessionLabel.textContent = (seenSources[sourceId] && seenSources[sourceId].tool || 'Source') + ': ' + sourceId.slice(0, 16)
   }
 
   function showScreen(screen) {
