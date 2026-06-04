@@ -1,0 +1,9 @@
+{
+  "name": "vibebuddy-zcode-adapter",
+  "version": "0.1.0",
+  "description": "VibeBuddy adapter for ZCode — tails JSONL logs and relays events",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  }
+}
