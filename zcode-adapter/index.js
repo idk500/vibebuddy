@@ -1,17 +1,18 @@
 /**
  * VibeBuddy ZCode Adapter
  *
- * Tails ZCode's structured JSONL log file and translates events into
+ * Tails ZCode's structured JSONL log and translates events into
  * VibeBuddy Relay Hub HTTP API calls.
+ *
+ * Each ZCode session (including subagents) registers as a separate source.
  *
  * Usage:
  *   node index.js [--relay http://127.0.0.1:4097] [--logdir C:\Users\...\.zcode\cli\log]
  */
 
-import { readFileSync, watchFile, unwatchFile, existsSync, statSync } from 'node:fs'
+import { readFileSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { createHash } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 
 // ── Configuration ──────────────────────────────────────
@@ -28,20 +29,31 @@ const POLL_MS = 500
 const REGISTER_INTERVAL_MS = 15000
 const NOISY_TOOLS = new Set(['TodoRead', 'TodoWrite', 'AskUserQuestion'])
 
-const SOURCE_ID = 'zcode:' + createHash('sha256').update(LOG_DIR).digest('hex').slice(0, 16)
-
 // ── State ──────────────────────────────────────────────
 
 let byteOffset = 0
 let currentFile = null
-let lastSessionId = null
-let activeTraceId = null
-let runningTools = new Set()
-let registered = false
+
+/** Per-session state: running tools, registered flag, metadata */
+const sessions = new Map()
+
+function getSessionState(sessionId) {
+  if (!sessions.has(sessionId)) {
+    sessions.set(sessionId, {
+      sourceId: 'zcode:' + sessionId.slice(0, 24),
+      runningTools: new Set(),
+      registered: false,
+      isSubagent: sessionId.includes('_subagent_'),
+      agentType: null,
+      parentSessionId: null,
+    })
+  }
+  return sessions.get(sessionId)
+}
 
 // ── HTTP helpers ───────────────────────────────────────
 
-async function postJson(path, body) {
+function postJson(path, body) {
   const url = RELAY_URL + path
   const data = JSON.stringify(body)
   return new Promise((resolve) => {
@@ -61,35 +73,36 @@ async function postJson(path, body) {
   })
 }
 
-async function registerSource() {
+async function registerSession(state) {
+  if (state.registered) return
+  const name = state.isSubagent
+    ? `${state.agentType || 'Agent'} (sub)`
+    : 'ZCode'
   const res = await postJson('/api/register', {
-    sourceId: SOURCE_ID,
-    tool: 'zcode',
-    name: 'ZCode',
+    sourceId: state.sourceId,
+    tool: state.isSubagent ? `zcode:${state.agentType || 'agent'}` : 'zcode',
+    name: name,
     capabilities: ['events'],
   })
   if (res && res.ok) {
-    registered = true
-    console.log(`[adapter] Registered as ${SOURCE_ID}`)
+    state.registered = true
+    console.log(`[adapter] Registered: ${name} → ${state.sourceId}`)
   }
 }
 
-async function sendEvent(msg) {
-  msg.sourceId = SOURCE_ID
-  if (lastSessionId) msg.sessionId = lastSessionId
-  await postJson('/api/event', msg)
+function sendEvent(state, msg) {
+  msg.sourceId = state.sourceId
+  postJson('/api/event', msg)
 }
 
 // ── Event mapping ──────────────────────────────────────
 
 function todayFile() {
-  // Use local date to match ZCode's log file naming
   const d = new Date()
   const yyyy = d.getFullYear()
   const mm = String(d.getMonth() + 1).padStart(2, '0')
   const dd = String(d.getDate()).padStart(2, '0')
-  const date = `${yyyy}-${mm}-${dd}`
-  return join(LOG_DIR, `zcode-${date}.jsonl`)
+  return join(LOG_DIR, `zcode-${yyyy}-${mm}-${dd}.jsonl`)
 }
 
 function handleLine(line) {
@@ -105,49 +118,93 @@ function handleLine(line) {
   const sessionId = entry.sessionId
   const ctx = entry.context || {}
 
-  if (sessionId && sessionId !== lastSessionId) {
-    lastSessionId = sessionId
+  if (!sessionId) return
+
+  const state = getSessionState(sessionId)
+
+  // Detect subagent metadata
+  if (event === 'turn.started' && ctx.agentType) {
+    state.isSubagent = true
+    state.agentType = ctx.agentType
+    state.parentSessionId = ctx.parentSessionId || null
+    registerSession(state)
+    sendEvent(state, {
+      type: 'status',
+      status: 'THINKING',
+      task: `${ctx.agentType} agent started`,
+      duration: 0, toolCount: 0, errorCount: 0,
+    })
+    return
+  }
+
+  // Auto-register on first activity
+  if (!state.registered) {
+    registerSession(state)
   }
 
   switch (event) {
-    // LLM is thinking — network request started/completed
-    case 'model.network.completed': {
-      activeTraceId = entry.traceId || null
-      sendEvent({
-        type: 'status',
-        status: 'THINKING',
-        task: `Thinking... (iteration ${ctx.iteration ?? '?'})`,
-        duration: entry.durationMs || 0,
-        toolCount: 0,
-        errorCount: 0,
+    case 'subagent.spawned': {
+      // Log in parent session
+      sendEvent(state, {
+        type: 'log',
+        level: 'info',
+        message: `Spawned ${ctx.agentType || 'agent'} subagent`,
+        ts: Date.now(),
       })
       break
     }
 
-    // Model response diagnostics — check if done
+    case 'subagent.completed': {
+      sendEvent(state, {
+        type: 'log',
+        level: 'info',
+        message: `${ctx.agentType || 'Agent'} completed (${ctx.totalToolUseCount ?? '?'} tools)`,
+        ts: Date.now(),
+      })
+      break
+    }
+
+    case 'turn.completed': {
+      state.runningTools.clear()
+      sendEvent(state, {
+        type: 'status',
+        status: 'IDLE',
+        task: 'Turn complete',
+        duration: 0, toolCount: 0, errorCount: 0,
+      })
+      break
+    }
+
+    case 'model.network.completed': {
+      sendEvent(state, {
+        type: 'status',
+        status: 'THINKING',
+        task: `Thinking... (iteration ${ctx.iteration ?? '?'})`,
+        duration: entry.durationMs || 0,
+        toolCount: 0, errorCount: 0,
+      })
+      break
+    }
+
     case 'model.response.diagnostics': {
       if (ctx.finishReason === 'end-turn') {
-        // Model finished, no more tool calls
-        runningTools.clear()
-        sendEvent({
+        state.runningTools.clear()
+        sendEvent(state, {
           type: 'status',
           status: 'IDLE',
           task: 'Task complete',
-          duration: 0,
-          toolCount: 0,
-          errorCount: 0,
+          duration: 0, toolCount: 0, errorCount: 0,
         })
       }
       break
     }
 
-    // Tool call started
     case 'tool.call.started': {
       const toolName = ctx.toolName || 'unknown'
       const callId = entry.toolCallId || ''
       if (!NOISY_TOOLS.has(toolName)) {
-        runningTools.add(callId)
-        sendEvent({
+        state.runningTools.add(callId)
+        sendEvent(state, {
           type: 'tool',
           id: callId,
           name: toolName,
@@ -155,53 +212,61 @@ function handleLine(line) {
           args: {},
           ts: Date.now(),
         })
-        sendEvent({
+        sendEvent(state, {
           type: 'status',
           status: 'EXECUTING',
           task: `Running: ${toolName}`,
-          duration: 0,
-          toolCount: 0,
-          errorCount: 0,
+          duration: 0, toolCount: 0, errorCount: 0,
         })
       }
       break
     }
 
-    // Tool call completed
     case 'tool.call.completed': {
       const toolName = ctx.toolName || 'unknown'
       const callId = entry.toolCallId || ''
-      const status = entry.status === 'completed' ? 'completed' : 'failed'
+      const toolStatus = entry.status === 'completed' ? 'completed' : 'failed'
       if (!NOISY_TOOLS.has(toolName)) {
-        runningTools.delete(callId)
-        sendEvent({
+        state.runningTools.delete(callId)
+        sendEvent(state, {
           type: 'tool',
           id: callId,
           name: toolName,
-          status: status,
+          status: toolStatus,
           args: {},
           ts: Date.now(),
         })
-        // If no more running tools, go back to THINKING
-        if (runningTools.size === 0) {
-          sendEvent({
+        if (state.runningTools.size === 0) {
+          sendEvent(state, {
             type: 'status',
             status: 'THINKING',
             task: 'Processing...',
-            duration: 0,
-            toolCount: 0,
-            errorCount: 0,
+            duration: 0, toolCount: 0, errorCount: 0,
           })
         }
       }
       break
     }
 
-    // Permission resolved (info only, can't intercept)
+    case 'tool.call.failed': {
+      const toolName = ctx.toolName || 'unknown'
+      const callId = entry.toolCallId || ''
+      state.runningTools.delete(callId)
+      sendEvent(state, {
+        type: 'tool',
+        id: callId,
+        name: toolName,
+        status: 'failed',
+        args: {},
+        ts: Date.now(),
+      })
+      break
+    }
+
     case 'tool.permission.resolved': {
       const toolName = ctx.toolName || 'unknown'
       const decision = ctx.decision || 'unknown'
-      sendEvent({
+      sendEvent(state, {
         type: 'log',
         level: 'info',
         message: `Permission: ${toolName} → ${decision} (${ctx.reason || ''})`,
@@ -209,10 +274,6 @@ function handleLine(line) {
       })
       break
     }
-
-    default:
-      // Ignore other events
-      break
   }
 }
 
@@ -221,7 +282,6 @@ function handleLine(line) {
 function tailFile() {
   const target = todayFile()
 
-  // Handle date rollover
   if (currentFile !== target) {
     if (currentFile) {
       console.log(`[adapter] Log rotated: ${currentFile} → ${target}`)
@@ -229,7 +289,6 @@ function tailFile() {
     currentFile = target
     byteOffset = 0
     if (existsSync(target)) {
-      // Start from end of existing file
       byteOffset = statSync(target).size
     }
   }
@@ -257,19 +316,11 @@ function tailFile() {
 
 async function main() {
   console.log(`[adapter] VibeBuddy ZCode Adapter starting...`)
-  console.log(`[adapter] Source ID: ${SOURCE_ID}`)
-  console.log(`[adapter] Relay:     ${RELAY_URL}`)
-  console.log(`[adapter] Log dir:   ${LOG_DIR}`)
-
-  await registerSource()
-
-  // Re-register periodically
-  setInterval(registerSource, REGISTER_INTERVAL_MS)
+  console.log(`[adapter] Relay:   ${RELAY_URL}`)
+  console.log(`[adapter] Log dir: ${LOG_DIR}`)
 
   // Poll log file
   setInterval(tailFile, POLL_MS)
-
-  // Initial tail
   tailFile()
 
   console.log(`[adapter] Watching for ZCode events...`)
