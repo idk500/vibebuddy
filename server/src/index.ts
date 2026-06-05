@@ -447,7 +447,9 @@ function handleHttpRequest(
 
   // Security: prevent path traversal using resolve + normalize
   const normalizedStatic = resolve(config.staticDir)
-  let filePath = resolve(normalizedStatic, urlPath === '/' ? 'index.html' : urlPath)
+  // Strip leading slash so resolve treats it as relative to staticDir
+  const relativePath = urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, '')
+  let filePath = resolve(normalizedStatic, relativePath)
 
   if (!filePath.startsWith(normalizedStatic + sep) && filePath !== normalizedStatic) {
     res.writeHead(403, { 'Content-Type': 'text/plain' })
