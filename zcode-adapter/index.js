@@ -1,18 +1,18 @@
 /**
  * VibeBuddy ZCode Adapter
  *
- * Tails ZCode's structured JSONL log and translates events into
- * VibeBuddy Relay Hub HTTP API calls.
- *
- * Each ZCode session (including subagents) registers as a separate source.
+ * Tails ZCode's JSONL log + reads session files for titles.
+ * Each main session is a source. Subagents are tracked as
+ * a property of the parent session, not separate sources.
  *
  * Usage:
- *   node index.js [--relay http://127.0.0.1:4097] [--logdir C:\Users\...\.zcode\cli\log]
+ *   node index.js [--relay URL] [--logdir PATH] [--sessionsdir PATH]
  */
 
-import { readFileSync, existsSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { createHash } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 
 // ── Configuration ──────────────────────────────────────
@@ -25,8 +25,8 @@ function getArg(name) {
 
 const RELAY_URL = (getArg('relay') || process.env.VIBE_RELAY_URL || 'http://127.0.0.1:4097').replace(/\/+$/, '')
 const LOG_DIR = getArg('logdir') || join(homedir(), '.zcode', 'cli', 'log')
+const SESSIONS_DIR = getArg('sessionsdir') || join(homedir(), '.zcode', 'v2', 'sessions')
 const POLL_MS = 500
-const REGISTER_INTERVAL_MS = 15000
 const NOISY_TOOLS = new Set(['TodoRead', 'TodoWrite', 'AskUserQuestion'])
 
 // ── State ──────────────────────────────────────────────
@@ -34,22 +34,8 @@ const NOISY_TOOLS = new Set(['TodoRead', 'TodoWrite', 'AskUserQuestion'])
 let byteOffset = 0
 let currentFile = null
 
-/** Per-session state: running tools, registered flag, metadata */
+/** sessionId → { sourceId, registered, title, runningTools, subagents } */
 const sessions = new Map()
-
-function getSessionState(sessionId) {
-  if (!sessions.has(sessionId)) {
-    sessions.set(sessionId, {
-      sourceId: 'zcode:' + sessionId.slice(0, 24),
-      runningTools: new Set(),
-      registered: false,
-      isSubagent: sessionId.includes('_subagent_'),
-      agentType: null,
-      parentSessionId: null,
-    })
-  }
-  return sessions.get(sessionId)
-}
 
 // ── HTTP helpers ───────────────────────────────────────
 
@@ -73,26 +59,110 @@ function postJson(path, body) {
   })
 }
 
+// ── Session title lookup ───────────────────────────────
+
+const sessionIdToFile = new Map()
+
+/** Scan session files to build sessionId → {title, file} index */
+function scanSessionFiles() {
+  if (!existsSync(SESSIONS_DIR)) return
+  try {
+    const workspaces = readdirSync(SESSIONS_DIR)
+    for (const ws of workspaces) {
+      const wsDir = join(SESSIONS_DIR, ws)
+      if (!statSync(wsDir).isDirectory()) continue
+      const files = readdirSync(wsDir)
+      for (const f of files) {
+        if (!f.endsWith('.json')) continue
+        try {
+          const raw = readFileSync(join(wsDir, f), 'utf-8')
+          const s = JSON.parse(raw)
+          const sid = s.meta?.acpSessionId
+          if (sid && s.meta?.title) {
+            sessionIdToFile.set(sid, { title: s.meta.title, workspace: s.meta.workspacePath })
+          }
+        } catch { /* skip malformed */ }
+      }
+    }
+  } catch (err) {
+    console.error(`[adapter] Session scan failed: ${err.message}`)
+  }
+}
+
+function getSessionTitle(sessionId) {
+  const info = sessionIdToFile.get(sessionId)
+  if (info) return info.title
+  return null
+}
+
+// ── Session management ─────────────────────────────────
+
+function getSession(sessionId) {
+  if (!sessions.has(sessionId)) {
+    // Subagent sessions have parentSessionId in context
+    sessions.set(sessionId, {
+      sourceId: 'zcode:' + sessionId.slice(0, 24),
+      registered: false,
+      title: getSessionTitle(sessionId) || sessionId.slice(0, 12),
+      runningTools: new Set(),
+      activeSubagents: [],  // [{agentType, toolCount, startedAt}]
+      completedSubagents: 0,
+    })
+  }
+  return sessions.get(sessionId)
+}
+
+/** Get the effective session for an event — subagent events map to parent */
+function getEffectiveSession(entry) {
+  const sid = entry.sessionId
+  const ctx = entry.context || {}
+
+  // If this is a subagent session, find the parent
+  if (sid && sid.includes('_subagent_') && ctx.parentSessionId) {
+    const parent = getSession(ctx.parentSessionId)
+    // Track subagent info on parent
+    const agentType = ctx.agentType || 'Agent'
+    const existing = parent.activeSubagents.find(s => s.sessionId === sid)
+    if (!existing) {
+      parent.activeSubagents.push({
+        sessionId: sid,
+        agentType,
+        toolCount: 0,
+        startedAt: Date.now(),
+      })
+    }
+    return parent
+  }
+
+  return getSession(sid)
+}
+
 async function registerSession(state) {
   if (state.registered) return
-  const name = state.isSubagent
-    ? `${state.agentType || 'Agent'} (sub)`
-    : 'ZCode'
   const res = await postJson('/api/register', {
     sourceId: state.sourceId,
-    tool: state.isSubagent ? `zcode:${state.agentType || 'agent'}` : 'zcode',
-    name: name,
+    tool: 'zcode',
+    name: state.title,
     capabilities: ['events'],
   })
   if (res && res.ok) {
     state.registered = true
-    console.log(`[adapter] Registered: ${name} → ${state.sourceId}`)
+    console.log(`[adapter] Registered: ${state.title} → ${state.sourceId}`)
   }
 }
 
 function sendEvent(state, msg) {
   msg.sourceId = state.sourceId
   postJson('/api/event', msg)
+}
+
+/** Build a task description that includes subagent info */
+function buildTaskLabel(state, baseTask) {
+  if (state.activeSubagents.length > 0) {
+    const names = state.activeSubagents.map(s => s.agentType).join(', ')
+    return `${baseTask} (${names})`
+  }
+  return baseTask
 }
 
 // ── Event mapping ──────────────────────────────────────
@@ -115,50 +185,36 @@ function handleLine(line) {
   }
 
   const event = entry.event
-  const sessionId = entry.sessionId
   const ctx = entry.context || {}
+  const state = getEffectiveSession(entry)
+  if (!state) return
 
-  if (!sessionId) return
-
-  const state = getSessionState(sessionId)
-
-  // Detect subagent metadata
-  if (event === 'turn.started' && ctx.agentType) {
-    state.isSubagent = true
-    state.agentType = ctx.agentType
-    state.parentSessionId = ctx.parentSessionId || null
-    registerSession(state)
-    sendEvent(state, {
-      type: 'status',
-      status: 'THINKING',
-      task: `${ctx.agentType} agent started`,
-      duration: 0, toolCount: 0, errorCount: 0,
-    })
-    return
-  }
-
-  // Auto-register on first activity
-  if (!state.registered) {
-    registerSession(state)
-  }
+  registerSession(state)
 
   switch (event) {
+    // Subagent lifecycle (on parent session)
     case 'subagent.spawned': {
-      // Log in parent session
+      // Already tracked in getEffectiveSession
       sendEvent(state, {
         type: 'log',
         level: 'info',
-        message: `Spawned ${ctx.agentType || 'agent'} subagent`,
+        message: `▸ ${ctx.agentType || 'Agent'} spawned`,
         ts: Date.now(),
       })
       break
     }
 
     case 'subagent.completed': {
+      // Remove from active list
+      const agentType = ctx.agentType || 'Agent'
+      state.activeSubagents = state.activeSubagents.filter(
+        s => s.agentType !== agentType || s.sessionId !== entry.sessionId
+      )
+      state.completedSubagents++
       sendEvent(state, {
         type: 'log',
         level: 'info',
-        message: `${ctx.agentType || 'Agent'} completed (${ctx.totalToolUseCount ?? '?'} tools)`,
+        message: `✓ ${agentType} completed (${ctx.totalToolUseCount ?? '?'} tools)`,
         ts: Date.now(),
       })
       break
@@ -166,6 +222,7 @@ function handleLine(line) {
 
     case 'turn.completed': {
       state.runningTools.clear()
+      state.activeSubagents = []
       sendEvent(state, {
         type: 'status',
         status: 'IDLE',
@@ -179,7 +236,7 @@ function handleLine(line) {
       sendEvent(state, {
         type: 'status',
         status: 'THINKING',
-        task: `Thinking... (iteration ${ctx.iteration ?? '?'})`,
+        task: buildTaskLabel(state, `Thinking... (iter ${ctx.iteration ?? '?'})`),
         duration: entry.durationMs || 0,
         toolCount: 0, errorCount: 0,
       })
@@ -215,7 +272,7 @@ function handleLine(line) {
         sendEvent(state, {
           type: 'status',
           status: 'EXECUTING',
-          task: `Running: ${toolName}`,
+          task: buildTaskLabel(state, `Running: ${toolName}`),
           duration: 0, toolCount: 0, errorCount: 0,
         })
       }
@@ -240,7 +297,7 @@ function handleLine(line) {
           sendEvent(state, {
             type: 'status',
             status: 'THINKING',
-            task: 'Processing...',
+            task: buildTaskLabel(state, 'Processing...'),
             duration: 0, toolCount: 0, errorCount: 0,
           })
         }
@@ -272,6 +329,17 @@ function handleLine(line) {
         message: `Permission: ${toolName} → ${decision} (${ctx.reason || ''})`,
         ts: Date.now(),
       })
+      break
+    }
+
+    case 'session.resumed': {
+      // Re-register with potentially updated title
+      const title = getSessionTitle(entry.sessionId)
+      if (title && state.title !== title) {
+        state.title = title
+        state.registered = false
+        registerSession(state)
+      }
       break
     }
   }
@@ -312,12 +380,20 @@ function tailFile() {
   }
 }
 
-// ── Main loop ──────────────────────────────────────────
+// ── Main ───────────────────────────────────────────────
 
 async function main() {
   console.log(`[adapter] VibeBuddy ZCode Adapter starting...`)
-  console.log(`[adapter] Relay:   ${RELAY_URL}`)
-  console.log(`[adapter] Log dir: ${LOG_DIR}`)
+  console.log(`[adapter] Relay:      ${RELAY_URL}`)
+  console.log(`[adapter] Log dir:    ${LOG_DIR}`)
+  console.log(`[adapter] Sessions:   ${SESSIONS_DIR}`)
+
+  // Scan session files for titles
+  scanSessionFiles()
+  console.log(`[adapter] Loaded ${sessionIdToFile.size} session titles`)
+
+  // Periodically rescan for new sessions
+  setInterval(scanSessionFiles, 30000)
 
   // Poll log file
   setInterval(tailFile, POLL_MS)
