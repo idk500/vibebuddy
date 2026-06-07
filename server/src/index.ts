@@ -1,8 +1,7 @@
 /**
  * VibeBuddy Relay Server — Entry Point
  *
- * Starts HTTP server (optional static file serving) + WebSocket server.
- * Connects to OpenCode via SDK and relays events to phone clients.
+ * Starts HTTP server + WebSocket server.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -11,42 +10,32 @@ import { join, extname, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type {
-  AdapterReply,
-  AndonStatus,
-  ClientMessage,
-  PendingRequest,
   RegisterSourceRequest,
   ServerConfig,
   ServerMessage,
-  SourceInstance,
-  SourceStatusSnapshot,
-  Terminal,
 } from './types.js'
+import { createHub } from './hub.js'
 import { createOpenCodeRelay } from './opencode.js'
 
-// ── Default configuration ───────────────────────────────
+// ── Configuration ────────────────────────────────────────
 
-// Mutable OpenCode server URL — updated by plugin via /api/config
-let opencodeServerUrl = process.env['VIBE_OPENCODE_URL'] ?? 'http://localhost:11434'
 const REQUEST_TTL_MS = parseInt(process.env['VIBE_REQUEST_TTL_MS'] ?? '120000', 10)
 const STATUS_SETTLE_MS = parseInt(process.env['VIBE_STATUS_SETTLE_MS'] ?? '20000', 10)
 
 const DEFAULT_CONFIG: ServerConfig = {
   port: parseInt(process.env['VIBE_PORT'] ?? '4097', 10),
-  opencodeUrl: opencodeServerUrl,
-  staticDir: process.env['VIBE_STATIC_DIR'] ?? resolveStaticDir(),
+  opencodeUrl: process.env['VIBE_OPENCODE_URL'] ?? 'http://localhost:11434',
+  staticDir: resolveStaticDir(),
   authToken: process.env['VIBE_AUTH_TOKEN'] ?? null,
 }
 
 function resolveStaticDir(): string | null {
-  const candidate = join(import.meta.dirname, '..', '..', 'app')
-  if (existsSync(candidate)) {
-    return candidate
-  }
+  try {
+    const candidate = join(import.meta.dirname, '..', '..', 'app')
+    if (existsSync(candidate)) return candidate
+  } catch { /* ignore */ }
   return null
 }
-
-// ── MIME types for static serving ───────────────────────
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -61,148 +50,34 @@ const MIME_TYPES: Record<string, string> = {
   '.webmanifest': 'application/manifest+json',
 }
 
-interface RelayHubState {
-  sources: Map<string, SourceInstance>
-  terminals: Map<string, Terminal>
-  pendingRequests: Map<string, PendingRequest>
-  replyQueues: Map<string, AdapterReply[]>
-  statusTimers: Map<string, ReturnType<typeof setTimeout>>
-  /** Last status per sourceId|sessionId for snapshot replay */
-  lastStatuses: Map<string, SourceStatusSnapshot>
-  stats: {
-    startedAt: number
-    eventsReceived: number
-    lastEvent: ServerMessage | null
-    lastEventAt: number | null
-  }
-}
-
-function pendingKey(sourceId: string, requestId: string): string {
-  return `${sourceId}:${requestId}`
-}
-
-// ── Main ────────────────────────────────────────────────
+// ── Main Entry ───────────────────────────────────────────
 
 export function main(config: ServerConfig = DEFAULT_CONFIG): void {
   console.log(`[vibebuddy] Starting server...`)
   console.log(`  Port:       ${config.port}`)
-  console.log(`  OpenCode:   ${config.opencodeUrl}`)
   console.log(`  Static dir: ${config.staticDir ?? '(disabled)'}`)
 
-  // Connected phone clients
+  const hub = createHub({ requestTtlMs: REQUEST_TTL_MS, statusSettleMs: STATUS_SETTLE_MS })
   const clients = new Set<WebSocket>()
-  const hub: RelayHubState = {
-    sources: new Map<string, SourceInstance>(),
-    terminals: new Map<string, Terminal>(),
-    pendingRequests: new Map<string, PendingRequest>(),
-    replyQueues: new Map<string, AdapterReply[]>(),
-    statusTimers: new Map<string, ReturnType<typeof setTimeout>>(),
-    lastStatuses: new Map<string, SourceStatusSnapshot>(),
-    stats: {
-      startedAt: Date.now(),
-      eventsReceived: 0,
-      lastEvent: null,
-      lastEventAt: null,
-    },
-  }
 
-  // Create HTTP server (optional static files)
-  const httpServer = createServer((req, res) => {
-    handleHttpRequest(req, res, config, clients, hub)
-  })
-
-  // Create WebSocket server on same port
+  const httpServer = createServer((req, res) => handleHttp(req, res, config, clients, hub))
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' })
 
-  wss.on('connection', (ws, req) => {
-    const clientIp = req.socket.remoteAddress ?? 'unknown'
-    console.log(`[ws] Client connected: ${clientIp}`)
+  wss.on('connection', (ws, req) => handleWsConnection(ws, req, config, clients, hub))
 
-    // Optional token auth
-    if (config.authToken) {
-      const url = new URL(req.url ?? '/', `http://${req.headers['host'] ?? 'localhost'}`)
-      const token = url.searchParams.get('token')
-      if (token !== config.authToken) {
-        console.log(`[ws] Auth failed for ${clientIp}`)
-        ws.close(4001, 'Unauthorized')
-        return
-      }
-    }
-
-    clients.add(ws)
-
-    // Create Terminal identity
-    const terminalId = randomUUID()
-    const terminal: Terminal = {
-      id: terminalId,
-      ws,
-      type: 'unknown',
-      connectedAt: Date.now(),
-    }
-    hub.terminals.set(terminalId, terminal)
-
-    // Send connected message with terminalId
-    const connected: ServerMessage = {
-      type: 'connected',
-      serverVersion: '0.1.0',  // VibeBuddy
-      sessionId: null,
-    }
-    ws.send(JSON.stringify({ ...connected, terminalId }))
-
-    // Send state snapshot: all known sources + their last status
-    const snapshot = buildSnapshot(hub)
-    if (snapshot.sources.length > 0) {
-      ws.send(JSON.stringify(snapshot))
-    }
-
-    // Handle incoming messages from phone
-    ws.on('message', (data, isBinary) => {
-      if (isBinary) {
-        handleBinaryMessage(data as Buffer, ws)
-        return
-      }
-      handleTextMessage(Buffer.isBuffer(data) ? data.toString('utf-8') : typeof data === 'string' ? data : '', ws, clients, hub, terminalId)
-    })
-
-    ws.on('close', () => {
-      console.log(`[ws] Client disconnected: ${clientIp} (${terminalId})`)
-      clients.delete(ws)
-      hub.terminals.delete(terminalId)
-    })
-
-    ws.on('error', (err) => {
-      console.error(`[ws] Client error: ${err.message}`)
-      clients.delete(ws)
-      hub.terminals.delete(terminalId)
-    })
-
-    // Keepalive ping
-    ws.on('pong', () => {
-      // Connection alive
-    })
-  })
-
-  // Ping all clients every 30s
   const pingInterval = setInterval(() => {
     for (const client of clients) {
-      if (client.readyState === client.OPEN) {
-        client.ping()
-      }
+      if (client.readyState === client.OPEN) client.ping()
     }
   }, 30_000)
 
-  // Cleanup expired pendingRequests and stale replyQueues every 60s
   const cleanupInterval = setInterval(() => {
     const now = Date.now()
-    for (const [key, pending] of hub.pendingRequests) {
-      if (pending.expiresAt < now) {
-        hub.pendingRequests.delete(key)
-      }
+    for (const [key, pending] of hub.state.pendingRequests) {
+      if (pending.expiresAt < now) hub.state.pendingRequests.delete(key)
     }
-    for (const [sourceId] of hub.replyQueues) {
-      if (!hub.sources.has(sourceId)) {
-        hub.replyQueues.delete(sourceId)
-      }
+    for (const [sourceId] of hub.state.replyQueues) {
+      if (!hub.state.sources.has(sourceId)) hub.state.replyQueues.delete(sourceId)
     }
   }, 60_000)
 
@@ -211,445 +86,218 @@ export function main(config: ServerConfig = DEFAULT_CONFIG): void {
     clearInterval(cleanupInterval)
   })
 
-  // Start HTTP server FIRST (don't block on OpenCode connection)
   httpServer.listen(config.port, '0.0.0.0', () => {
     console.log(`[vibebuddy] Ready at http://0.0.0.0:${config.port}`)
     console.log(`[vibebuddy] WebSocket at ws://0.0.0.0:${config.port}/ws`)
-    console.log(`[vibebuddy] Open PWA on phone: http://<PC-IP>:${config.port}`)
   })
 
-  // Connect to OpenCode event stream in background (non-blocking)
   const relay = createOpenCodeRelay(config.opencodeUrl)
   relay.onEvent((message: ServerMessage) => {
-    const json = JSON.stringify(message)
-    let sent = 0
-    for (const client of clients) {
-      if (client.readyState === client.OPEN) {
-        client.send(json)
-        sent++
-      }
+    const sent = broadcast(clients, message)
+    if (sent > 0) console.log(`[relay] → ${sent} client(s): ${message.type}`)
+  })
+  relay.connect().catch((err) => console.warn(`[opencode] ${String(err)}`))
+}
+
+// ── WebSocket Handler ─────────────────────────────────────
+
+function handleWsConnection(
+  ws: WebSocket,
+  req: IncomingMessage,
+  config: ServerConfig,
+  clients: Set<WebSocket>,
+  hub: ReturnType<typeof createHub>
+): void {
+  const clientIp = req.socket.remoteAddress ?? 'unknown'
+  console.log(`[ws] Client connected: ${clientIp}`)
+
+  if (config.authToken) {
+    const url = new URL(req.url ?? '/', `http://${req.headers['host'] ?? 'localhost'}`)
+    if (url.searchParams.get('token') !== config.authToken) {
+      ws.close(4001, 'Unauthorized')
+      return
     }
-    if (sent > 0) {
-      console.log(`[relay] → ${sent} client(s): ${message.type}`)
-    }
+  }
+
+  clients.add(ws)
+  const terminalId = randomUUID()
+  hub.state.terminals.set(terminalId, { id: terminalId, ws, type: 'unknown', connectedAt: Date.now() })
+
+  ws.send(JSON.stringify({ type: 'connected', serverVersion: '0.1.0', sessionId: null, terminalId }))
+
+  const snapshot = hub.buildSnapshot()
+  if (snapshot.sources.length > 0) ws.send(JSON.stringify(snapshot))
+
+  ws.on('message', (data, isBinary) => {
+    if (isBinary) return
+    const raw = Buffer.isBuffer(data) ? data.toString('utf-8') : typeof data === 'string' ? data : ''
+    handleWsMessage(raw, ws, clients, hub, terminalId)
   })
 
-  // Fire-and-forget: connect to OpenCode in background
-  relay.connect().then(() => {
-    console.log(`[opencode] Connected to event stream`)
-  }).catch((err: unknown) => {
-    console.warn(`[opencode] Connection failed: ${(err as Error).message}`)
-    console.warn(`[opencode] Will retry in background...`)
+  ws.on('close', () => {
+    console.log(`[ws] Client disconnected: ${clientIp}`)
+    clients.delete(ws)
+    hub.state.terminals.delete(terminalId)
+  })
+
+  ws.on('error', (err) => {
+    console.error(`[ws] Error: ${err.message}`)
+    clients.delete(ws)
+    hub.state.terminals.delete(terminalId)
   })
 }
 
-// ── Snapshot builder ──────────────────────────────────────
+function handleWsMessage(
+  raw: string,
+  _ws: WebSocket,
+  clients: Set<WebSocket>,
+  hub: ReturnType<typeof createHub>,
+  terminalId: string
+): void {
+  let msg: Record<string, unknown>
+  try { msg = JSON.parse(raw) as Record<string, unknown> } catch { return }
 
-function buildSnapshot(hub: RelayHubState): import('./types.js').SnapshotMessage {
-  const sources: import('./types.js').SnapshotMessage['sources'] = []
-  for (const [sourceId, source] of hub.sources) {
-    // Find the most recent status for this source
-    let bestStatus: SourceStatusSnapshot | undefined
-    for (const [, snap] of hub.lastStatuses) {
-      if (snap.sourceId === sourceId) {
-        if (!bestStatus || snap.ts > bestStatus.ts) {
-          bestStatus = snap
-        }
-      }
+  const type = msg['type']
+  console.log(`[ws] Received: ${String(type)} from ${terminalId}`)
+
+  if (type === 'identify') {
+    const terminal = hub.state.terminals.get(terminalId)
+    if (terminal) {
+      terminal.type = ['phone', 'desktop', 'ide', 'browser'].includes(msg['terminalType'] as string)
+        ? msg['terminalType'] as 'phone' | 'desktop' | 'ide' | 'browser'
+        : 'unknown'
+      terminal.name = msg['terminalName'] as string | undefined
     }
-    sources.push({
-      sourceId,
-      tool: source.tool,
-      name: source.name,
-      status: bestStatus,
+    return
+  }
+
+  if (type === 'permission_reply' || type === 'question_reply' || type === 'question_reject') {
+    const result = hub.handleReply({
+      sourceId: msg['sourceId'] as string,
+      requestId: msg['requestID'] as string,
+      sessionId: msg['sessionId'] as string | undefined,
+      reply: msg['reply'] as 'once' | 'always' | 'reject' | undefined,
+      answers: msg['answers'] as string[][] | undefined,
+    })
+    broadcast(clients, {
+      type: 'reply_ack',
+      ackId: msg['ackId'] as string ?? `ack_${Date.now()}`,
+      requestId: msg['requestID'] as string,
+      sourceId: msg['sourceId'] as string,
+      sessionId: msg['sessionId'] as string | undefined,
+      status: result.status,
+      message: result.message,
     })
   }
-  return { type: 'snapshot', sources }
 }
 
-function updateLastStatus(msg: Record<string, unknown>, hub: RelayHubState): void {
-  if (msg['type'] !== 'status') return
-  const sourceId = typeof msg['sourceId'] === 'string' ? msg['sourceId'] : ''
-  const sessionId = typeof msg['sessionId'] === 'string' ? msg['sessionId'] : typeof msg['sessionID'] === 'string' ? msg['sessionID'] as string : ''
-  if (!sourceId) return
-  const key = `${sourceId}|${sessionId}`
-  hub.lastStatuses.set(key, {
-    sourceId,
-    sessionId: sessionId || undefined,
-    status: (msg['status'] as AndonStatus) ?? 'IDLE',
-    task: (msg['task'] as string) ?? '',
-    duration: typeof msg['duration'] === 'number' ? msg['duration'] : 0,
-    toolCount: typeof msg['toolCount'] === 'number' ? msg['toolCount'] : 0,
-    errorCount: typeof msg['errorCount'] === 'number' ? msg['errorCount'] : 0,
-    ts: Date.now(),
-  })
-}
+// ── HTTP Handler ──────────────────────────────────────────
 
-// ── HTTP request handler (static files) ─────────────────
-
-function handleHttpRequest(
+function handleHttp(
   req: IncomingMessage,
   res: ServerResponse,
   config: ServerConfig,
   clients: Set<WebSocket>,
-  hub: RelayHubState,
+  hub: ReturnType<typeof createHub>
 ): void {
   const urlPath = req.url?.split('?')[0] ?? '/'
 
-  // ── Test endpoint: inject a fake event to all connected phones ──
-  if (urlPath === '/api/test' && req.method === 'POST') {
-    if (config.authToken) {
-      const authHeader = req.headers['authorization'] ?? ''
-      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
-      if (token !== config.authToken) {
-        res.writeHead(401, { 'Content-Type': 'application/json' })
-        res.end('{"error":"unauthorized"}')
-        return
-      }
-    }
-    let body = ''
-    req.on('data', (chunk: Buffer) => { body += chunk.toString() })
-    req.on('end', () => {
-      let testEvent: Record<string, unknown>
-      try {
-        testEvent = body ? JSON.parse(body) as Record<string, unknown> : {}
-      } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end('{"error":"invalid json"}')
-        return
-      }
-      const msg = JSON.stringify(testEvent)
-      let sent = 0
-      for (const wsClient of clients) {
-        if (wsClient.readyState === wsClient.OPEN) {
-          wsClient.send(msg)
-          sent++
-        }
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(`{"sent":${sent}}`)
-    })
-    return
-  }
-
-  // ── Diagnostics endpoint: inspect current hub state ───
-  if (urlPath === '/api/diagnostics' && req.method === 'GET') {
-    writeJson(res, 200, {
-      ok: true,
-      clients: Array.from(clients).filter((client) => client.readyState === client.OPEN).length,
-      sources: Array.from(hub.sources.values()),
-      pendingRequests: Array.from(hub.pendingRequests.values()),
-      replyQueues: Array.from(hub.replyQueues.entries()).map(([sourceId, replies]) => ({ sourceId, count: replies.length })),
-      stats: hub.stats,
-    })
-    return
-  }
-
-  // ── Adapter registration endpoint ─────────────────────
-  if (urlPath === '/api/register' && req.method === 'POST') {
-    readJsonBody(req, res, (data) => {
-      const source = registerSource(data as unknown as RegisterSourceRequest, hub)
-      if (!source) {
-        writeJson(res, 400, { error: 'sourceId required' })
-        return
-      }
-      broadcast(clients, {
-        type: 'source',
-        sourceId: source.sourceId,
-        tool: source.tool,
-        name: source.name,
-        status: 'registered',
-        ts: Date.now(),
-      })
-      writeJson(res, 200, { ok: true, sourceId: source.sourceId })
-    })
-    return
-  }
-
-  // ── Adapter event endpoint ────────────────────────────
-  if (urlPath === '/api/event' && req.method === 'POST') {
-    readJsonBody(req, res, (data) => {
-      const msg = data as Partial<ServerMessage> & Record<string, unknown>
-      if (typeof msg.type !== 'string') {
-        writeJson(res, 400, { error: 'type required' })
-        return
-      }
-
-      const sourceId = typeof msg.sourceId === 'string' ? msg.sourceId : undefined
-      if (sourceId && !hub.sources.has(sourceId)) {
-        registerSource({ sourceId, tool: 'unknown', name: sourceId }, hub)
-      }
-
-      if ((msg.type === 'permission' || msg.type === 'question') && sourceId && typeof msg.id === 'string') {
-        const sessionId = normalizeSessionId(msg)
-        hub.pendingRequests.set(pendingKey(sourceId, msg.id), {
-          kind: msg.type,
-          sourceId,
-          sessionId,
-          requestId: msg.id,
-          createdAt: Date.now(),
-          expiresAt: Date.now() + REQUEST_TTL_MS,
-        })
-      }
-
-      hub.stats.eventsReceived++
-      hub.stats.lastEvent = msg as ServerMessage
-      hub.stats.lastEventAt = Date.now()
-      updateLastStatus(msg, hub)
-      const sent = broadcast(clients, msg as ServerMessage)
-      settleStatusAfterInactivity(msg, clients, hub)
-      console.log(`[hub] event ${msg.type} from ${sourceId ?? 'unknown'} → ${sent} client(s)`)
-      writeJson(res, 200, { ok: true, sent })
-    })
-    return
-  }
-
-  // ── Adapter reply polling endpoint ────────────────────
-  if (urlPath === '/api/replies' && req.method === 'GET') {
-    const url = new URL(req.url ?? '/', `http://${req.headers['host'] ?? 'localhost'}`)
-    const sourceId = url.searchParams.get('sourceId') ?? ''
-    if (!sourceId) {
-      writeJson(res, 400, { error: 'sourceId required' })
-      return
-    }
-    const queue = hub.replyQueues.get(sourceId) ?? []
-    hub.replyQueues.set(sourceId, [])
-    writeJson(res, 200, { ok: true, replies: queue })
-    return
-  }
-
-  // ── Config endpoint: plugin registers its OpenCode server URL ──
-  if (urlPath === '/api/config' && req.method === 'POST') {
-    let body = ''
-    req.on('data', (chunk: Buffer) => { body += chunk.toString() })
-    req.on('end', () => {
-      try {
-        const data = JSON.parse(body) as Record<string, unknown>
-        if (data.opencodeUrl && typeof data.opencodeUrl === 'string') {
-          opencodeServerUrl = data.opencodeUrl
-          console.log(`[config] OpenCode server URL updated: ${opencodeServerUrl}`)
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end('{"ok":true}')
-      } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end('{"error":"invalid json"}')
-      }
-    })
-    return
-  }
+  if (urlPath === '/api/test' && req.method === 'POST') return handleApiTest(req, res, config, clients)
+  if (urlPath === '/api/diagnostics' && req.method === 'GET') return handleApiDiagnostics(res, clients, hub)
+  if (urlPath === '/api/register' && req.method === 'POST') return handleApiRegister(req, res, clients, hub)
+  if (urlPath === '/api/event' && req.method === 'POST') return handleApiEvent(req, res, clients, hub)
+  if (urlPath === '/api/replies' && req.method === 'GET') return handleApiReplies(req, res, hub)
 
   if (!config.staticDir) {
     res.writeHead(404, { 'Content-Type': 'text/plain' })
-    res.end('Static serving disabled')
-    return
+    return void res.end('Not Found')
   }
-
-  // Security: prevent path traversal using resolve + normalize
-  const normalizedStatic = resolve(config.staticDir)
-  // Strip leading slash so resolve treats it as relative to staticDir
-  const relativePath = urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, '')
-  let filePath = resolve(normalizedStatic, relativePath)
-
-  if (!filePath.startsWith(normalizedStatic + sep) && filePath !== normalizedStatic) {
-    res.writeHead(403, { 'Content-Type': 'text/plain' })
-    res.end('Forbidden')
-    return
-  }
-
-  if (!existsSync(filePath) || !statSync(filePath).isFile()) {
-    // SPA fallback: serve index.html for unknown routes
-    filePath = join(config.staticDir, 'index.html')
-    if (!existsSync(filePath)) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' })
-      res.end('Not Found')
-      return
-    }
-  }
-
-  const ext = extname(filePath)
-  const contentType = MIME_TYPES[ext] ?? 'application/octet-stream'
-
-  try {
-    const content = readFileSync(filePath)
-    res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-cache, no-store, must-revalidate' })
-    res.end(content)
-  } catch {
-    res.writeHead(500, { 'Content-Type': 'text/plain' })
-    res.end('Internal Server Error')
-  }
+  serveStatic(req, res, config.staticDir)
 }
 
-// ── Client message handlers ─────────────────────────────
+function handleApiTest(req: IncomingMessage, res: ServerResponse, config: ServerConfig, clients: Set<WebSocket>): void {
+  if (config.authToken) {
+    const token = (req.headers['authorization'] ?? '').replace('Bearer ', '')
+    if (token !== config.authToken) return void writeJson(res, 401, { ok: false, error: 'unauthorized' })
+  }
+  readBody(req, res, (body) => {
+    const sent = broadcast(clients, body as unknown as ServerMessage)
+    writeJson(res, 200, { ok: true, sent })
+  })
+}
 
-function handleTextMessage(raw: string, _ws: WebSocket, clients: Set<WebSocket>, hub: RelayHubState, terminalId: string): void {
-  try {
-    const msg = JSON.parse(raw) as ClientMessage | { type: 'identify'; terminalType?: string; terminalName?: string }
-    console.log(`[ws] Received: ${(msg as Record<string, unknown>)['type']} from ${terminalId}`)
+function handleApiDiagnostics(res: ServerResponse, clients: Set<WebSocket>, hub: ReturnType<typeof createHub>): void {
+  writeJson(res, 200, {
+    ok: true,
+    clients: Array.from(clients).filter(c => c.readyState === c.OPEN).length,
+    sources: Array.from(hub.state.sources.values()),
+    pendingRequests: Array.from(hub.state.pendingRequests.values()),
+    stats: hub.state.stats,
+  })
+}
 
-    // Handle terminal identity
-    if ((msg as Record<string, unknown>)['type'] === 'identify') {
-      const idMsg = msg as { type: 'identify'; terminalType?: string; terminalName?: string }
-      const terminal = hub.terminals.get(terminalId)
-      if (terminal) {
-        terminal.type = (['phone', 'desktop', 'ide', 'browser'].includes(idMsg.terminalType ?? '') ? idMsg.terminalType : 'unknown') as Terminal['type']
-        terminal.name = idMsg.terminalName
-        console.log(`[ws] Terminal ${terminalId} identified as ${terminal.type} (${terminal.name ?? 'unnamed'})`)
+function handleApiRegister(req: IncomingMessage, res: ServerResponse, clients: Set<WebSocket>, hub: ReturnType<typeof createHub>): void {
+  readBody(req, res, (data) => {
+    const input = data as unknown as RegisterSourceRequest
+    if (!input?.sourceId) return void writeJson(res, 400, { ok: false, error: 'sourceId required' })
+    const source = hub.registerSource(input)
+    broadcast(clients, { type: 'source', sourceId: source.sourceId, tool: source.tool, name: source.name, status: 'registered', ts: Date.now() })
+    writeJson(res, 200, { ok: true, sourceId: source.sourceId })
+  })
+}
+
+function handleApiEvent(req: IncomingMessage, res: ServerResponse, clients: Set<WebSocket>, hub: ReturnType<typeof createHub>): void {
+  readBody(req, res, (data) => {
+    const msg = data
+    if (typeof msg['type'] !== 'string') return void writeJson(res, 400, { ok: false, error: 'type required' })
+
+    const sourceId = msg['sourceId'] as string | undefined
+    if (sourceId && !hub.state.sources.has(sourceId)) {
+      hub.registerSource({ sourceId })
+    }
+
+    if ((msg['type'] === 'permission' || msg['type'] === 'question') && sourceId && typeof msg['id'] === 'string') {
+      hub.addPendingRequest({
+        kind: msg['type'],
+        sourceId,
+        sessionId: msg['sessionId'] as string | undefined,
+        requestId: msg['id'],
+      })
+    }
+
+    hub.recordEvent(msg as unknown as ServerMessage)
+    hub.updateLastStatus(msg)
+    const sent = broadcast(clients, msg as unknown as ServerMessage)
+
+    // Status settle timer
+    if (msg['type'] === 'status') {
+      const status = msg['status']
+      if (status === 'THINKING' || status === 'EXECUTING') {
+        const key = hub.statusTimerKey(sourceId, msg['sessionId'] as string | undefined)
+        const existing = hub.state.statusTimers.get(key)
+        if (existing) clearTimeout(existing)
+        const timer = setTimeout(() => {
+          hub.state.statusTimers.delete(key)
+          broadcast(clients, { type: 'status', sourceId, sessionId: msg['sessionId'] as string | undefined, status: 'IDLE', task: 'No recent activity', duration: 0, toolCount: 0, errorCount: 0 })
+        }, STATUS_SETTLE_MS)
+        hub.state.statusTimers.set(key, timer)
       }
-      return
     }
 
-    const clientMsg = msg as ClientMessage
-    switch (clientMsg.type) {
-      case 'voice_start':
-        // Phase 2: handle voice start
-        break
-      case 'voice_stop':
-        // Phase 2: handle voice stop
-        break
-      case 'command':
-        // Handle commands (list_sessions, etc.)
-        break
-      case 'question_reply':
-        handleReplyMessage(clientMsg, clients, hub)
-        break
-      case 'question_reject':
-        handleReplyMessage(clientMsg, clients, hub)
-        break
-      case 'permission_reply':
-        handleReplyMessage(clientMsg, clients, hub)
-        break
-      default:
-        console.warn(`[ws] Unknown message type: ${String((clientMsg as Record<string, unknown>)['type'])}`)
-    }
-  } catch {
-    console.warn('[ws] Invalid JSON message')
-  }
+    console.log(`[hub] event ${String(msg['type'])} from ${sourceId ?? 'unknown'} → ${sent} client(s)`)
+    writeJson(res, 200, { ok: true, sent })
+  })
 }
 
-function handleReplyMessage(msg: ClientMessage, clients: Set<WebSocket>, hub: RelayHubState): void {
-  if (msg.type !== 'question_reply' && msg.type !== 'question_reject' && msg.type !== 'permission_reply') return
-
-  const ackId = msg.ackId ?? `ack_${Date.now()}_${Math.random().toString(16).slice(2)}`
-  const requestId = msg.requestID
-  const sourceId = msg.sourceId
-  const sessionId = msg.sessionId
-
-  if (!sourceId) {
-    broadcastReplyAck(clients, { ackId, requestId, sourceId, sessionId, status: 'failed', message: 'sourceId missing' })
-    return
-  }
-
-  const key = pendingKey(sourceId, requestId)
-  const pending = hub.pendingRequests.get(key)
-  if (!pending) {
-    broadcastReplyAck(clients, { ackId, requestId, sourceId, sessionId, status: 'failed', message: 'pending request not found' })
-    return
-  }
-
-  if (pending.expiresAt < Date.now()) {
-    hub.pendingRequests.delete(key)
-    broadcastReplyAck(clients, { ackId, requestId, sourceId, sessionId, status: 'expired', message: 'pending request expired' })
-    return
-  }
-
-  const reply: AdapterReply = {
-    ackId,
-    kind: pending.kind,
-    sourceId,
-    sessionId: sessionId ?? pending.sessionId,
-    requestId,
-    ts: Date.now(),
-  }
-
-  if (msg.type === 'permission_reply') {
-    reply.reply = msg.reply
-  } else if (msg.type === 'question_reply') {
-    reply.answers = msg.answers
-  } else {
-    reply.answers = []
-  }
-
-  const queue = hub.replyQueues.get(sourceId) ?? []
-  queue.push(reply)
-  hub.replyQueues.set(sourceId, queue)
-  hub.pendingRequests.delete(key)
-
-  broadcastReplyAck(clients, { ackId, requestId, sourceId, sessionId: reply.sessionId, status: 'accepted' })
+function handleApiReplies(req: IncomingMessage, res: ServerResponse, hub: ReturnType<typeof createHub>): void {
+  const url = new URL(req.url ?? '/', `http://${req.headers['host'] ?? 'localhost'}`)
+  const sourceId = url.searchParams.get('sourceId') ?? ''
+  if (!sourceId) return void writeJson(res, 400, { ok: false, error: 'sourceId required' })
+  const replies = hub.getReplies(sourceId)
+  writeJson(res, 200, { ok: true, replies })
 }
 
-function broadcastReplyAck(
-  clients: Set<WebSocket>,
-  ack: Omit<Extract<ServerMessage, { type: 'reply_ack' }>, 'type'>,
-): void {
-  broadcast(clients, { type: 'reply_ack', ...ack })
-}
-
-function registerSource(input: RegisterSourceRequest, hub: RelayHubState): SourceInstance | null {
-  if (!input || typeof input.sourceId !== 'string' || input.sourceId.length === 0) return null
-  const existing = hub.sources.get(input.sourceId)
-  const source: SourceInstance = {
-    sourceId: input.sourceId,
-    tool: input.tool ?? existing?.tool ?? 'unknown',
-    name: input.name ?? existing?.name ?? input.sourceId,
-    serverUrl: input.serverUrl ?? existing?.serverUrl,
-    cwd: input.cwd ?? existing?.cwd,
-    capabilities: Array.isArray(input.capabilities) ? input.capabilities : existing?.capabilities ?? [],
-    lastSeen: Date.now(),
-  }
-  hub.sources.set(source.sourceId, source)
-  if (!hub.replyQueues.has(source.sourceId)) hub.replyQueues.set(source.sourceId, [])
-  console.log(`[hub] source registered: ${source.sourceId} (${source.tool})`)
-  return source
-}
-
-function normalizeSessionId(msg: Record<string, unknown>): string | undefined {
-  const sessionId = msg['sessionId'] ?? msg['sessionID']
-  return typeof sessionId === 'string' ? sessionId : undefined
-}
-
-function statusTimerKey(sourceId: string | undefined, sessionId: string | undefined): string {
-  return `${sourceId ?? 'unknown'}:${sessionId ?? 'default'}`
-}
-
-function settleStatusAfterInactivity(
-  msg: Partial<ServerMessage> & Record<string, unknown>,
-  clients: Set<WebSocket>,
-  hub: RelayHubState,
-): void {
-  if (msg.type !== 'status') return
-
-  const sourceId = typeof msg.sourceId === 'string' ? msg.sourceId : undefined
-  const sessionId = normalizeSessionId(msg)
-  const key = statusTimerKey(sourceId, sessionId)
-  const existing = hub.statusTimers.get(key)
-  if (existing) {
-    clearTimeout(existing)
-    hub.statusTimers.delete(key)
-  }
-
-  const status = msg.status
-  if (status !== 'THINKING' && status !== 'EXECUTING') return
-
-  const timer = setTimeout(() => {
-    hub.statusTimers.delete(key)
-    const idle: ServerMessage = {
-      type: 'status',
-      sourceId,
-      sessionId,
-      status: 'IDLE',
-      task: 'No recent activity',
-      duration: 0,
-      toolCount: typeof msg.toolCount === 'number' ? msg.toolCount : 0,
-      errorCount: typeof msg.errorCount === 'number' ? msg.errorCount : 0,
-    }
-    const sent = broadcast(clients, idle)
-    hub.stats.lastEvent = idle
-    hub.stats.lastEventAt = Date.now()
-    console.log(`[hub] status settled ${key} → IDLE after ${STATUS_SETTLE_MS}ms (${sent} client(s))`)
-  }, STATUS_SETTLE_MS)
-  hub.statusTimers.set(key, timer)
-}
+// ── Helpers ──────────────────────────────────────────────
 
 function broadcast(clients: Set<WebSocket>, message: ServerMessage): number {
   const json = JSON.stringify(message)
@@ -668,24 +316,47 @@ function writeJson(res: ServerResponse, status: number, body: Record<string, unk
   res.end(JSON.stringify(body))
 }
 
-function readJsonBody(req: IncomingMessage, res: ServerResponse, onOk: (data: Record<string, unknown>) => void): void {
+function readBody(req: IncomingMessage, res: ServerResponse, onOk: (data: Record<string, unknown>) => void): void {
   let body = ''
-  req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+  req.on('data', (chunk) => { body += chunk })
   req.on('end', () => {
-    try {
-      onOk(body ? JSON.parse(body) as Record<string, unknown> : {})
-    } catch {
-      writeJson(res, 400, { error: 'invalid json' })
-    }
+    try { onOk(body ? JSON.parse(body) as Record<string, unknown> : {}) }
+    catch { writeJson(res, 400, { ok: false, error: 'invalid json' }) }
   })
 }
 
-function handleBinaryMessage(_data: Buffer, _ws: WebSocket): void {
-  // Phase 2: handle audio binary frames
-  // Format: 1 byte type (0x01=audio) + 4 byte sequence + payload
+function serveStatic(req: IncomingMessage, res: ServerResponse, staticDir: string): void {
+  const urlPath = req.url?.split('?')[0] ?? '/'
+  const normalized = resolve(staticDir)
+  const relative = urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, '')
+  let filePath = resolve(normalized, relative)
+
+  if (!filePath.startsWith(normalized + sep) && filePath !== normalized) {
+    res.writeHead(403, { 'Content-Type': 'text/plain' })
+    return void res.end('Forbidden')
+  }
+
+  if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+    filePath = join(staticDir, 'index.html')
+    if (!existsSync(filePath)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' })
+      return void res.end('Not Found')
+    }
+  }
+
+  const ext = extname(filePath)
+  const contentType = MIME_TYPES[ext] ?? 'application/octet-stream'
+  try {
+    const content = readFileSync(filePath)
+    res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-cache' })
+    res.end(content)
+  } catch {
+    res.writeHead(500, { 'Content-Type': 'text/plain' })
+    res.end('Internal Server Error')
+  }
 }
 
-// ── Start ───────────────────────────────────────────────
+// ── Start ─────────────────────────────────────────────────
 
 try {
   main()

@@ -199,69 +199,246 @@
     return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')'
   }
 
-  function AndonRenderer() {
-    this.currentStatus = 'DISCONNECTED'
-    this.durationTimer = null
-    this.settleTimer = null
-    this.panel = $('andon-panel')
-    this.statusText = $('andon-status-text')
-    this.task = $('andon-task')
-    this.statTools = $('stat-tools')
-    this.statErrors = $('stat-errors')
-    this.statDuration = $('stat-duration')
+  // Session card renderer — replaces old AndonRenderer
+  function SessionCardRenderer() {
+    this.rootBadge = $('root-badge')
+    this.rootStatusIcon = $('root-status-icon')
+    this.rootStatusText = $('root-status-text')
+    this.rootSessionCount = $('root-session-count')
+    this.cardsContainer = $('session-cards')
+    this.sessionStatuses = {}   // key -> { status, task, toolCount, errorCount, duration, active, subagents, title }
+    this.expandedCards = {}      // key -> true (which cards are expanded)
+    this.permissionMap = {}      // key -> permission msg (if pending)
+    this.lastRenderedKeys = null
   }
 
-  AndonRenderer.prototype.update = function (data) {
-    var status = data.status || 'DISCONNECTED'
-    if (data.settle !== false) this.scheduleSettle(status)
-    var color = STATUS_COLORS[status] || STATUS_COLORS.DISCONNECTED
-    if (status !== this.currentStatus) {
-      this.currentStatus = status
-      document.documentElement.style.setProperty('--status-color', color)
-      document.documentElement.style.setProperty('--status-color-bg', hexToRgba(color, 0.12))
-      document.documentElement.style.setProperty('--status-color-glow', hexToRgba(color, 0.25))
-      this.panel.setAttribute('data-status', status)
+  SessionCardRenderer.prototype.updateSession = function (key, data) {
+    if (!this.sessionStatuses[key]) {
+      this.sessionStatuses[key] = { status: 'IDLE', task: '', toolCount: 0, errorCount: 0, duration: 0, active: false, subagents: '', title: '' }
     }
-    if (data.task !== undefined) this.task.textContent = truncate(data.task, 120)
-    if (data.toolCount !== undefined) this.statTools.textContent = String(data.toolCount)
-    if (data.errorCount !== undefined) {
-      this.statErrors.textContent = String(data.errorCount)
-      this.statErrors.style.color = data.errorCount > 0 ? STATUS_COLORS.ERROR : ''
+    var s = this.sessionStatuses[key]
+    if (data.status !== undefined) s.status = data.status
+    if (data.task !== undefined) s.task = data.task
+    if (data.toolCount !== undefined) s.toolCount = data.toolCount
+    if (data.errorCount !== undefined) s.errorCount = data.errorCount
+    if (data.duration !== undefined) s.duration = data.duration
+    if (data.active !== undefined) s.active = data.active
+    if (data.subagents !== undefined) s.subagents = data.subagents
+    if (data.title !== undefined) s.title = data.title
+    // Auto-expand error cards
+    if (s.status === 'ERROR') this.expandedCards[key] = true
+    this.render()
+  }
+
+  SessionCardRenderer.prototype.removeSession = function (key) {
+    delete this.sessionStatuses[key]
+    delete this.expandedCards[key]
+    delete this.permissionMap[key]
+    this.render()
+  }
+
+  SessionCardRenderer.prototype.reset = function () {
+    this.sessionStatuses = {}
+    this.expandedCards = {}
+    this.permissionMap = {}
+    this.lastRenderedKeys = null
+    this.render()
+  }
+
+  // Root badge: worst status wins. ERROR > EXECUTING > THINKING > IDLE > COMPLETE > DISCONNECTED
+  SessionCardRenderer.prototype.aggregateRootStatus = function () {
+    var priority = { ERROR: 5, EXECUTING: 4, THINKING: 3, IDLE: 2, COMPLETE: 1, DISCONNECTED: 0 }
+    var best = 'IDLE'
+    var count = 0
+    for (var key in this.sessionStatuses) {
+      count++
+      var s = this.sessionStatuses[key].status
+      if ((priority[s] || 0) > (priority[best] || 0)) best = s
     }
-    if (data.duration !== undefined) this.statDuration.textContent = formatDuration(data.duration)
-    this.statusText.textContent = status
+    return { status: count === 0 ? 'IDLE' : best, count: count }
   }
 
-  AndonRenderer.prototype.reset = function () {
-    this.update({ status: 'DISCONNECTED', task: '等待连接...', toolCount: 0, errorCount: 0, duration: 0 })
-    if (this.durationTimer) clearInterval(this.durationTimer)
-    this.durationTimer = null
-    if (this.settleTimer) clearTimeout(this.settleTimer)
-    this.settleTimer = null
-  }
+  SessionCardRenderer.prototype.render = function () {
+    var agg = this.aggregateRootStatus()
+    var rootColor = STATUS_COLORS[agg.status] || STATUS_COLORS.IDLE
 
-  AndonRenderer.prototype.scheduleSettle = function (status) {
+    // Root badge uses its own inline color (independent of --status-color)
+    this.rootBadge.setAttribute('data-status', agg.status)
+    this.rootBadge.style.background = hexToRgba(rootColor, 0.12)
+    this.rootStatusIcon.textContent = '\u25CF'
+    this.rootStatusIcon.style.color = rootColor
+    this.rootStatusText.textContent = agg.status
+    this.rootStatusText.style.color = rootColor
+    this.rootSessionCount.textContent = agg.count === 1 ? '1 session' : agg.count + ' sessions'
+
+    // Global --status-color for active card border etc. uses root color
+    document.documentElement.style.setProperty('--status-color', rootColor)
+    document.documentElement.style.setProperty('--status-color-bg', hexToRgba(rootColor, 0.12))
+
+    // Build cards
+    var keys = Object.keys(this.sessionStatuses)
+    // Sort: active source first, then ERROR, then THINKING/EXECUTING, then others
     var self = this
-    if (this.settleTimer) {
-      clearTimeout(this.settleTimer)
-      this.settleTimer = null
-    }
-    if (status !== 'THINKING' && status !== 'EXECUTING') return
-    var capturedKey = activeSourceKey
-    this.settleTimer = setTimeout(function () {
-      self.settleTimer = null
-      if (self.currentStatus === 'THINKING' || self.currentStatus === 'EXECUTING') {
-        pauseStats(null)
-        var state = capturedKey ? getStats(capturedKey) : null
-        self.update({
-          status: 'IDLE',
-          task: 'No recent activity',
-          toolCount: state ? state.toolCount : 0,
-          errorCount: state ? state.errorCount : 0,
-          duration: state ? currentDurationFor(state) : 0
-        })
+    keys.sort(function (a, b) {
+      if (a === activeSourceKey) return -1
+      if (b === activeSourceKey) return 1
+      var sa = self.sessionStatuses[a].status
+      var sb = self.sessionStatuses[b].status
+      var prio = { ERROR: 4, THINKING: 3, EXECUTING: 2, IDLE: 1, COMPLETE: 0, DISCONNECTED: -1 }
+      return (prio[sb] || 0) - (prio[sa] || 0)
+    })
+
+    var needsFullRender = !this.lastRenderedKeys || this.lastRenderedKeys.join(',') !== keys.join(',')
+    if (needsFullRender) {
+      // Full rebuild
+      while (this.cardsContainer.firstChild) this.cardsContainer.removeChild(this.cardsContainer.firstChild)
+      for (var i = 0; i < keys.length; i++) {
+        this.cardsContainer.appendChild(this.buildCard(keys[i]))
       }
-    }, 25000)
+      this.lastRenderedKeys = keys.slice()
+    } else {
+      // Update in place
+      for (var i = 0; i < keys.length; i++) {
+        this.updateCardInPlace(keys[i])
+      }
+    }
+  }
+
+  SessionCardRenderer.prototype.buildCard = function (key) {
+    var self = this
+    var s = this.sessionStatuses[key]
+    var isActive = key === activeSourceKey
+    var isExpanded = !!this.expandedCards[key]
+    var perm = this.permissionMap[key]
+
+    var card = createElement('div', {
+      className: 'session-card' + (isActive ? ' session-card-active' : '') + (isExpanded ? ' session-card-expanded' : '')
+    })
+
+    // Summary row
+    var summary = createElement('div', { className: 'session-card-summary' })
+
+    var dot = createElement('div', { className: 'card-status-dot' })
+    var dotColor = STATUS_COLORS[s.status] || STATUS_COLORS.IDLE
+    dot.style.background = dotColor
+    dot.style.boxShadow = s.active ? '0 0 4px ' + dotColor : 'none'
+    dot.setAttribute('data-status', s.status)
+
+    var title = createElement('span', { className: 'card-title' }, truncate(s.title || key.split('|').pop().slice(0, 16), 40))
+
+    var subagentLabel = createElement('span', { className: 'card-subagent-label' }, s.subagents || '')
+
+    var errorDot = createElement('div', { className: 'card-error-dot' })
+    if (s.errorCount === 0) errorDot.setAttribute('data-hidden', '')
+
+    var statusText = createElement('span', { className: 'card-status-text' })
+    statusText.setAttribute('data-status', s.status)
+    statusText.textContent = s.status
+
+    var expandIcon = createElement('span', { className: 'card-expand-icon' }, '\u25B6')
+
+    summary.appendChild(dot)
+    summary.appendChild(title)
+    summary.appendChild(subagentLabel)
+    summary.appendChild(errorDot)
+    summary.appendChild(statusText)
+    summary.appendChild(expandIcon)
+
+    // Toggle expand on click
+    summary.onclick = function () {
+      if (self.expandedCards[key]) {
+        delete self.expandedCards[key]
+      } else {
+        self.expandedCards[key] = true
+      }
+      self.render()
+    }
+
+    card.appendChild(summary)
+
+    // Detail section
+    var detail = createElement('div', { className: 'session-card-detail' })
+
+    var task = createElement('div', { className: 'card-detail-task' }, truncate(s.task || 'No task info', 120))
+
+    var stats = createElement('div', { className: 'card-detail-stats' })
+    stats.appendChild(createElement('div', { className: 'stat' },
+      createElement('span', { className: 'stat-label' }, 'Tools'),
+      createElement('span', { className: 'stat-value' }, String(s.toolCount))
+    ))
+    stats.appendChild(createElement('div', { className: 'stat' },
+      createElement('span', { className: 'stat-label' }, 'Errors'),
+      createElement('span', { className: 'stat-value' + (s.errorCount > 0 ? ' error-highlight' : '') }, String(s.errorCount))
+    ))
+    stats.appendChild(createElement('div', { className: 'stat' },
+      createElement('span', { className: 'stat-label' }, 'Duration'),
+      createElement('span', { className: 'stat-value' }, formatDuration(s.duration))
+    ))
+
+    detail.appendChild(task)
+    detail.appendChild(stats)
+
+    // Permission indicator
+    if (perm) {
+      var permDiv = createElement('div', { className: 'card-permission-indicator' })
+      permDiv.appendChild(createElement('span', { className: 'card-permission-icon' }, '!'))
+      permDiv.appendChild(createElement('span', { className: 'card-permission-text' }, perm.tool || 'Permission required'))
+
+      var permActions = createElement('div', { className: 'card-permission-actions' })
+      var allowBtn = createElement('button', { className: 'card-perm-btn card-perm-btn-allow' }, 'Allow')
+      var rejectBtn = createElement('button', { className: 'card-perm-btn card-perm-btn-reject' }, 'Reject')
+      permActions.appendChild(allowBtn)
+      permActions.appendChild(rejectBtn)
+      permDiv.appendChild(permActions)
+      detail.appendChild(permDiv)
+
+      // Wire permission buttons
+      ;(function (p, allowB, rejectB) {
+        allowB.onclick = function (e) {
+          e.stopPropagation()
+          var statusLine = { textContent: '' }
+          sendPromptReply(null, statusLine, p, { type: 'permission_reply', requestID: p.id, reply: 'once' })
+          allowB.disabled = true
+          rejectB.disabled = true
+        }
+        rejectB.onclick = function (e) {
+          e.stopPropagation()
+          var statusLine = { textContent: '' }
+          sendPromptReply(null, statusLine, p, { type: 'permission_reply', requestID: p.id, reply: 'reject' })
+          allowB.disabled = true
+          rejectB.disabled = true
+        }
+      })(perm, allowBtn, rejectBtn)
+    }
+
+    card.appendChild(detail)
+    return card
+  }
+
+  SessionCardRenderer.prototype.updateCardInPlace = function (key) {
+    var cardEl = this.cardsContainer.querySelector('[data-card-key="' + key + '"]')
+    // Since we don't set data-card-key in buildCard, we need to do a full render for simplicity
+    // or use index-based matching. For now, full render handles it.
+    // This method is a no-op since we do full render on status change
+  }
+
+  SessionCardRenderer.prototype.setPermission = function (key, msg) {
+    this.permissionMap[key] = msg
+    this.expandedCards[key] = true  // auto-expand to show permission
+    this.render()
+  }
+
+  SessionCardRenderer.prototype.clearPermission = function (key) {
+    delete this.permissionMap[key]
+    this.render()
+  }
+
+  // Root status color
+  SessionCardRenderer.prototype.updateRootColor = function () {
+    var agg = this.aggregateRootStatus()
+    var color = STATUS_COLORS[agg.status] || STATUS_COLORS.IDLE
+    document.documentElement.style.setProperty('--status-color', color)
+    document.documentElement.style.setProperty('--status-color-bg', hexToRgba(color, 0.12))
   }
 
   function LogRenderer() {
@@ -299,7 +476,7 @@
   }
 
   var ws = null
-  var andon = null
+  var sessionCards = null
   var log = null
   var pendingPromptOverlays = {}
   var seenSources = {}
@@ -352,7 +529,7 @@
   }
 
   function messageSessionId(msg) {
-    return msg && (msg.sessionId || msg.sessionID || '')
+    return msg && (msg.sessionId || '')
   }
 
   function statsKey(msg) {
@@ -383,15 +560,15 @@
   }
 
   function renderStatsTick() {
-    if (!andon) return
+    if (!sessionCards || !activeSourceKey) return
     var state = activeStats()
     if (!state) return
-    andon.update({
-      status: andon.currentStatus || 'IDLE',
-      settle: false,
+    sessionCards.updateSession(activeSourceKey, {
+      status: sessionCards.sessionStatuses[activeSourceKey] ? sessionCards.sessionStatuses[activeSourceKey].status : 'IDLE',
       duration: currentDurationFor(state),
       toolCount: state.toolCount,
-      errorCount: state.errorCount
+      errorCount: state.errorCount,
+      active: state.active
     })
   }
 
@@ -531,7 +708,7 @@
 
   function init() {
     ws = new WSClient()
-    andon = new AndonRenderer()
+    sessionCards = new SessionCardRenderer()
     log = new LogRenderer()
 
     connectScreen = $('connect-screen')
@@ -564,7 +741,7 @@
 
     updateClock()
     setInterval(updateClock, 30000)
-    andon.reset()
+    sessionCards.reset()
     if (window.__VIBE_TEST_MODE__) {
       window.__vibeTest = {
         handleWSMessage: handleWSMessage,
@@ -581,6 +758,9 @@
             toolCount: state ? state.toolCount : 0,
             errorCount: state ? state.errorCount : 0
           }
+        },
+        getSessionStatuses: function () {
+          return sessionCards ? sessionCards.sessionStatuses : {}
         }
       }
     }
@@ -605,7 +785,7 @@
     resetStats(null)
     activeSourceKey = null
     seenSources = {}
-    andon.reset()
+    sessionCards.reset()
     log.clear()
     showScreen('connect')
   }
@@ -617,12 +797,12 @@
       setConnectStatus('已连接!', 'success')
       showScreen('andon')
       connectionDot.className = connectionDot.className.replace(/\s?connected/g, '') + ' connected'
-      andon.update({ status: 'IDLE', task: '已连接，等待 AI 客户端事件...', toolCount: 0, errorCount: 0, duration: 0 })
+      sessionCards.render()
     } else if (state === 'CONNECTING') {
       setConnectStatus('正在连接...', '')
     } else if (state === 'RECONNECTING') {
       connectionDot.className = connectionDot.className.replace(/\s?connected/g, '')
-      andon.update({ status: 'DISCONNECTED', task: '重连中...' })
+      sessionCards.render()
     } else if (state === 'DISCONNECTED') {
       connected = false
       connectionDot.className = connectionDot.className.replace(/\s?connected/g, '')
@@ -649,47 +829,85 @@
       } else {
         seenSources[msg.sourceId] = msg
       }
-      updateSourceSelector()
+      sessionCards.render()
     } else if (type === 'status') {
       handleStatsForStatus(msg)
       var key = statsKey(msg)
-      // Auto-switch to new active source (THINKING/EXECUTING) or if no source selected yet
+      var state = getStats(key)
+      // Auto-switch to new active source
       if (!activeSourceKey || (key !== activeSourceKey && (msg.status === 'THINKING' || msg.status === 'EXECUTING'))) {
         activeSourceKey = key
-        updateSourceSelector()
       }
-      if (key === activeSourceKey) {
-        andon.update(withLocalStats(msg))
-        if (msg.sessionId) sessionLabel.textContent = 'Session: ' + String(msg.sessionId).slice(0, 8)
+      // Update session card with stats
+      var title = ''
+      if (seenSources[msg.sourceId]) {
+        title = seenSources[msg.sourceId].name || seenSources[msg.sourceId].tool || key.split('|').pop().slice(0, 16)
+      }
+      var subagents = ''
+      if (msg.subagents) subagents = msg.subagents
+      sessionCards.updateSession(key, {
+        status: msg.status,
+        task: msg.task || '',
+        toolCount: state.toolCount,
+        errorCount: state.errorCount,
+        duration: currentDurationFor(state),
+        active: state.active,
+        subagents: subagents,
+        title: title
+      })
+      if (key === activeSourceKey && msg.sessionId) {
+        sessionLabel.textContent = 'Session: ' + String(msg.sessionId).slice(0, 8)
       }
     } else if (type === 'tool') {
       handleStatsForTool(msg)
       var key = statsKey(msg)
+      var state = getStats(key)
       // Auto-switch on tool started from a different source
       if (!activeSourceKey || (key !== activeSourceKey && msg.status === 'started')) {
         activeSourceKey = key
-        updateSourceSelector()
       }
+      var title = ''
+      if (seenSources[msg.sourceId]) {
+        title = seenSources[msg.sourceId].name || seenSources[msg.sourceId].tool || key.split('|').pop().slice(0, 16)
+      }
+      sessionCards.updateSession(key, {
+        status: msg.status === 'started' ? 'EXECUTING' : sessionCards.sessionStatuses[key] ? sessionCards.sessionStatuses[key].status : 'IDLE',
+        task: msg.status === 'started' ? (msg.title || ('Running: ' + msg.name)) : (sessionCards.sessionStatuses[key] ? sessionCards.sessionStatuses[key].task : ''),
+        toolCount: state.toolCount,
+        errorCount: state.errorCount,
+        duration: currentDurationFor(state),
+        active: true,
+        title: title
+      })
       if (key === activeSourceKey) {
         log.addToolEvent(msg)
-        if (msg.status === 'started') andon.update(withLocalStats({ status: 'EXECUTING', sourceId: msg.sourceId, sessionId: msg.sessionId, task: msg.title || ('Running: ' + msg.name) }))
-        else renderStatsTick()
       }
     } else if (type === 'log') {
       handleStatsForLog(msg)
       var key = statsKey(msg)
       if (key === activeSourceKey) {
         if (!isNoisyLog(msg)) log.addLogEntry(msg)
-        if (msg.level === 'error') renderStatsTick()
       }
     } else if (type === 'question') {
       log.addLogEntry({ level: 'warn', message: 'Question: ' + (msg.questions && msg.questions[0] ? msg.questions[0].header || '' : ''), ts: Date.now() })
       showQuestionOverlay(msg)
     } else if (type === 'permission') {
       log.addLogEntry({ level: 'warn', message: 'Permission: ' + (msg.tool || 'unknown'), ts: Date.now() })
-      showPermissionOverlay(msg)
+      // Show inline in session card instead of overlay
+      var key = statsKey(msg)
+      sessionCards.setPermission(key, msg)
+      // Still keep overlay for backward compat if no session card matches
+      if (!sessionCards.sessionStatuses[key]) {
+        showPermissionOverlay(msg)
+      }
     } else if (type === 'reply_ack') {
       handleReplyAck(msg)
+      if (msg.status === 'accepted') {
+        // Clear permission indicator for this session
+        for (var k in sessionCards.permissionMap) {
+          sessionCards.clearPermission(k)
+        }
+      }
     } else {
       console.log('[app] Unknown message type: ' + type, msg)
     }
@@ -705,39 +923,23 @@
         var state = getStats(key)
         if (shouldUseIncomingCount(src.status.toolCount, state.toolCount)) state.toolCount = src.status.toolCount
         if (shouldUseIncomingCount(src.status.errorCount, state.errorCount)) state.errorCount = src.status.errorCount
+        var title = src.name || src.tool || key.split('|').pop().slice(0, 16)
+        sessionCards.updateSession(key, {
+          status: src.status.status || 'IDLE',
+          task: src.status.task || '',
+          toolCount: state.toolCount,
+          errorCount: state.errorCount,
+          duration: src.status.duration || 0,
+          active: state.active,
+          title: title
+        })
       }
     }
     if (!activeSourceKey && sources.length > 0) {
       var first = sources[0]
       activeSourceKey = first.sourceId + '|' + (first.status && first.status.sessionId ? first.status.sessionId : 'session')
-      if (first.status) {
-        andon.update(withLocalStats(first.status))
-      }
     }
-    updateSourceSelector()
-  }
-
-  function updateSourceSelector() {
-    var container = document.getElementById('source-selector')
-    if (!container) return
-    container.innerHTML = ''
-    var sourceIds = Object.keys(seenSources)
-    if (sourceIds.length === 0) {
-      container.style.display = 'none'
-      return
-    }
-    container.style.display = 'flex'
-    for (var i = 0; i < sourceIds.length; i++) {
-      (function (sid) {
-        var src = seenSources[sid]
-        var btn = createElement('button', {
-          className: 'source-btn' + (activeSourceKey && activeSourceKey.indexOf(sid) === 0 ? ' source-btn-active' : '')
-        }, src.name || sid.slice(0, 12))
-        btn.title = src.tool + ': ' + sid
-        btn.onclick = function () { switchToSource(sid) }
-        container.appendChild(btn)
-      })(sourceIds[i])
-    }
+    sessionCards.render()
   }
 
   function switchToSource(sourceId) {
@@ -753,16 +955,8 @@
     }
     if (!bestKey) bestKey = sourceId + '|session'
     activeSourceKey = bestKey
-    // Re-render with this source's state
-    var state = getStats(bestKey)
-    andon.update({
-      status: state.active ? 'EXECUTING' : 'IDLE',
-      task: '',
-      toolCount: state.toolCount,
-      errorCount: state.errorCount,
-      duration: currentDurationFor(state)
-    })
-    updateSourceSelector()
+    // Re-render session cards (active card will highlight)
+    sessionCards.render()
     sessionLabel.textContent = (seenSources[sourceId] && seenSources[sourceId].tool || 'Source') + ': ' + sourceId.slice(0, 16)
   }
 
@@ -817,11 +1011,11 @@
     fullReply.sourceId = promptMsg.sourceId
     fullReply.sessionId = promptMsg.sessionId || promptMsg.sessionID
     pendingPromptOverlays[ackId] = { overlay: overlay, statusLine: statusLine }
-    statusLine.textContent = 'Sending reply...'
-    setPromptButtonsDisabled(overlay, true)
+    if (statusLine && statusLine.textContent !== undefined) statusLine.textContent = 'Sending reply...'
+    if (overlay && overlay.getElementsByTagName) setPromptButtonsDisabled(overlay, true)
     if (!ws.send(fullReply)) {
-      statusLine.textContent = 'Send failed: WebSocket not connected'
-      setPromptButtonsDisabled(overlay, false)
+      if (statusLine && statusLine.textContent !== undefined) statusLine.textContent = 'Send failed: WebSocket not connected'
+      if (overlay && overlay.getElementsByTagName) setPromptButtonsDisabled(overlay, false)
     }
   }
 
@@ -830,9 +1024,12 @@
     var text = msg.status === 'accepted' ? 'Accepted' : msg.status === 'expired' ? 'Expired' : 'Failed: ' + (msg.message || '')
     log.addLogEntry({ level: msg.status === 'accepted' ? 'info' : 'error', message: 'Reply ' + text + ' (' + (msg.requestId || '') + ')', ts: Date.now() })
     if (!pending) return
-    pending.statusLine.textContent = text
-    if (msg.status === 'accepted') setTimeout(function () { pending.overlay.parentNode && pending.overlay.parentNode.removeChild(pending.overlay) }, 450)
-    else setPromptButtonsDisabled(pending.overlay, false)
+    if (pending.statusLine && pending.statusLine.textContent !== undefined) pending.statusLine.textContent = text
+    if (msg.status === 'accepted' && pending.overlay && pending.overlay.parentNode) {
+      setTimeout(function () { pending.overlay.parentNode && pending.overlay.parentNode.removeChild(pending.overlay) }, 450)
+    } else if (pending.overlay && pending.overlay.getElementsByTagName) {
+      setPromptButtonsDisabled(pending.overlay, false)
+    }
     delete pendingPromptOverlays[msg.ackId]
   }
 

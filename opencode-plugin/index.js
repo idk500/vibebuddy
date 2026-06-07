@@ -34,7 +34,7 @@ const SOURCE_ID = "opencode:" + getProcessPid() + ":" + hashText(CWD || "unknown
 function now() { return Date.now() }
 
 function normalizeSessionId(value) {
-  return value && (value.sessionID || value.sessionId || (value.info && (value.info.sessionID || value.info.sessionId))) || "opencode"
+  return value && (value.sessionId || (value.info && value.info.sessionId)) || "opencode"
 }
 
 function requestId(prefix, value) {
@@ -161,7 +161,7 @@ function mapEvent(event) {
     case "question.asked": {
       const info = props.info || props
       const qSessionId = normalizeSessionId(info)
-      messages.push(withSource({ type: "question", id: requestId("que", info), sessionID: qSessionId, questions: (info.questions || []).map(function(q) { return { header: q.header, question: q.question, options: q.options, multiple: q.multiple, custom: q.custom } }) }, qSessionId))
+      messages.push(withSource({ type: "question", id: requestId("que", info), sessionId: qSessionId, questions: (info.questions || []).map(function(q) { return { header: q.header, question: q.question, options: q.options, multiple: q.multiple, custom: q.custom } }) }, qSessionId))
       messages.push(withSource({ type: "log", level: "warn", message: "Question: " + ((info.questions && info.questions[0] && info.questions[0].header) || ""), ts: now() }, qSessionId))
       break
     }
@@ -188,7 +188,7 @@ function permissionMessageFromInput(input, sessionId) {
   return {
     type: "permission",
     id: requestId("per", input),
-    sessionID: sessionId,
+    sessionId: sessionId,
     tool: input.tool || input.name || (input.permission && input.permission.tool) || "unknown",
     message: input.message || input.description || input.pattern || "Allow this action?",
     patterns: input.patterns,
@@ -201,7 +201,7 @@ function toolApprovalMessageFromInput(input, sessionId) {
   return {
     type: "permission",
     id: requestId("tool", input),
-    sessionID: sessionId,
+    sessionId: sessionId,
     tool: tool,
     message: title || "Allow tool execution: " + tool,
     patterns: input && input.patterns,

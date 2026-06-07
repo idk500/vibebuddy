@@ -34,8 +34,29 @@ const NOISY_TOOLS = new Set(['TodoRead', 'TodoWrite', 'AskUserQuestion'])
 let byteOffset = 0
 let currentFile = null
 
-/** sessionId → { sourceId, registered, title, runningTools, subagents } */
+/** sessionId → { sourceId, registered, title, runningTools, subagents, lastActivityAt } */
 const sessions = new Map()
+
+// ── Staleness timeout ──────────────────────────────────
+
+const STALE_MS = 60 * 1000  // 60s with no events → mark IDLE
+
+function checkStaleSessions() {
+  const now = Date.now()
+  for (const [sid, state] of sessions) {
+    if (!state.lastActivityAt) continue
+    const age = now - state.lastActivityAt
+    if (age > STALE_MS && state.currentStatus !== 'IDLE') {
+      state.currentStatus = 'IDLE'
+      sendEvent(state, {
+        type: 'status',
+        status: 'IDLE',
+        task: state.title + ' (idle)',
+        duration: 0, toolCount: 0, errorCount: 0,
+      })
+    }
+  }
+}
 
 // ── HTTP helpers ───────────────────────────────────────
 
@@ -107,6 +128,8 @@ function getSession(sessionId) {
       runningTools: new Set(),
       activeSubagents: [],  // [{agentType, toolCount, startedAt}]
       completedSubagents: 0,
+      lastActivityAt: 0,
+      currentStatus: 'IDLE',
     })
   }
   return sessions.get(sessionId)
@@ -153,6 +176,7 @@ async function registerSession(state) {
 
 function sendEvent(state, msg) {
   msg.sourceId = state.sourceId
+  if (msg.type === 'status') state.currentStatus = msg.status
   postJson('/api/event', msg)
 }
 
@@ -190,6 +214,7 @@ function handleLine(line) {
   if (!state) return
 
   registerSession(state)
+  state.lastActivityAt = Date.now()
 
   switch (event) {
     // Subagent lifecycle (on parent session)
@@ -232,14 +257,27 @@ function handleLine(line) {
       break
     }
 
-    case 'model.network.completed': {
+    case 'turn.started': {
       sendEvent(state, {
         type: 'status',
         status: 'THINKING',
-        task: buildTaskLabel(state, `Thinking... (iter ${ctx.iteration ?? '?'})`),
-        duration: entry.durationMs || 0,
-        toolCount: 0, errorCount: 0,
+        task: buildTaskLabel(state, 'Thinking...'),
+        duration: 0, toolCount: 0, errorCount: 0,
       })
+      break
+    }
+
+    case 'model.network.completed': {
+      // Model finished a network request — if no tools are running, model is thinking
+      if (state.runningTools.size === 0) {
+        sendEvent(state, {
+          type: 'status',
+          status: 'THINKING',
+          task: buildTaskLabel(state, `Thinking... (iter ${ctx.iteration ?? '?'})`),
+          duration: entry.durationMs || 0,
+          toolCount: 0, errorCount: 0,
+        })
+      }
       break
     }
 
@@ -347,6 +385,106 @@ function handleLine(line) {
 
 // ── Log tailing ────────────────────────────────────────
 
+const REPLAY_TAIL_BYTES = 200 * 1024  // Replay last 200KB on startup
+
+/** Replay only enough to register known sessions and determine their last status */
+function replayRecentLines() {
+  const target = todayFile()
+  if (!existsSync(target)) return 0
+
+  let data
+  try {
+    data = readFileSync(target, 'utf-8')
+  } catch {
+    return 0
+  }
+
+  const totalLen = data.length
+  const start = Math.max(0, totalLen - REPLAY_TAIL_BYTES)
+  const chunk = data.slice(start)
+  const lines = (start > 0 ? chunk.slice(chunk.indexOf('\n') + 1) : chunk).split('\n')
+
+  // Collect last event per session for status inference
+  const lastEvents = new Map()  // sessionId → last entry
+  let count = 0
+  for (const line of lines) {
+    if (!line.trim()) continue
+    let entry
+    try { entry = JSON.parse(line) } catch { continue }
+    const sid = entry.sessionId
+    if (sid) {
+      lastEvents.set(sid, entry)
+    }
+    // Also track subagent→parent mappings
+    getEffectiveSession(entry)
+    count++
+  }
+
+  // For each known session, register it and send its inferred last status
+  const now = Date.now()
+  for (const [sid, entry] of lastEvents) {
+    const state = sessions.get(sid)
+    if (!state) continue
+    registerSession(state)
+
+    // Check if last event is too old to be considered active
+    const entryTs = entry.timestamp ? new Date(entry.timestamp).getTime() : 0
+    const age = entryTs ? now - entryTs : Infinity
+    const isRecent = age < STALE_MS
+
+    if (!isRecent) {
+      // Stale session → IDLE
+      sendEvent(state, {
+        type: 'status',
+        status: 'IDLE',
+        task: state.title,
+        duration: 0, toolCount: 0, errorCount: 0,
+      })
+      state.lastActivityAt = entryTs || 0
+      state.currentStatus = 'IDLE'
+      continue
+    }
+
+    // Recent event → infer status
+    const event = entry.event
+    const ctx = entry.context || {}
+    let status = 'IDLE'
+    let task = state.title
+
+    if (event === 'tool.call.started') {
+      status = 'EXECUTING'
+      task = `Running: ${ctx.toolName || 'tool'}`
+    } else if (event === 'tool.call.completed' || event === 'tool.call.failed') {
+      status = 'THINKING'
+      task = 'Processing...'
+    } else if (event === 'model.network.completed') {
+      status = 'THINKING'
+      task = `Thinking...`
+    } else if (event === 'model.response.diagnostics') {
+      if (ctx.finishReason === 'end-turn') {
+        status = 'IDLE'
+        task = 'Task complete'
+      } else {
+        status = 'THINKING'
+        task = 'Thinking...'
+      }
+    } else if (event === 'turn.completed') {
+      status = 'IDLE'
+      task = 'Turn complete'
+    }
+
+    state.lastActivityAt = entryTs || now
+    sendEvent(state, {
+      type: 'status',
+      status,
+      task: buildTaskLabel(state, task),
+      duration: 0, toolCount: 0, errorCount: 0,
+    })
+  }
+
+  return count
+}
+
 function tailFile() {
   const target = todayFile()
 
@@ -395,9 +533,21 @@ async function main() {
   // Periodically rescan for new sessions
   setInterval(scanSessionFiles, 30000)
 
-  // Poll log file
+  // Replay recent log entries to restore known session state
+  const replayCount = replayRecentLines()
+  console.log(`[adapter] Replayed ${replayCount} recent log entries`)
+
+  // Set byteOffset to end of file after replay
+  const target = todayFile()
+  if (existsSync(target)) {
+    byteOffset = statSync(target).size
+  }
+
+  // Poll log file for new entries
   setInterval(tailFile, POLL_MS)
-  tailFile()
+
+  // Check for stale sessions every 15s
+  setInterval(checkStaleSessions, 15000)
 
   console.log(`[adapter] Watching for ZCode events...`)
 }

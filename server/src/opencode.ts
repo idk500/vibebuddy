@@ -150,7 +150,7 @@ export function createOpenCodeRelay(opencodeUrl: string): OpenCodeRelay {
           duration: 0,
           toolCount: 0,
           errorCount: 0,
-          sessionId: toStr(props['sessionID'], undefined),
+          sessionId: toStr(props['sessionId'], undefined),
         })
         break
       }
@@ -163,7 +163,7 @@ export function createOpenCodeRelay(opencodeUrl: string): OpenCodeRelay {
           duration: 0,
           toolCount: 0,
           errorCount: 0,
-          sessionId: toStr(props['sessionID'], undefined),
+          sessionId: toStr(props['sessionId'], undefined),
         })
         break
 
@@ -337,7 +337,7 @@ export function createOpenCodeRelay(opencodeUrl: string): OpenCodeRelay {
         results.push({
           type: 'question',
           id: toStr(info?.['id'] ?? event['id'], ''),
-          sessionID: toStr(info?.['sessionID'] ?? event['sessionID'], ''),
+          sessionId: toStr(info?.['sessionId'] ?? event['sessionId'], ''),
           questions: questions.map((q) => ({
             header: toStr(q['header'], ''),
             question: toStr(q['question'], ''),
@@ -361,7 +361,7 @@ export function createOpenCodeRelay(opencodeUrl: string): OpenCodeRelay {
         results.push({
           type: 'permission',
           id: toStr(perm['id'] ?? event['id'], ''),
-          sessionID: toStr(perm['sessionID'] ?? event['sessionID'], ''),
+          sessionId: toStr(perm['sessionId'] ?? event['sessionId'], ''),
           tool: toStr(perm['tool'] ?? perm['name'], 'unknown'),
           message: toStr(perm['message'] ?? perm['description'], 'Allow this action?'),
           patterns: (perm['patterns'] ?? undefined) as string[] | undefined,

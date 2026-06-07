@@ -46,10 +46,7 @@
         <span id="connection-dot" class="status-dot"></span>
         <span class="header-title">VibeBuddy</span>
       </div>
-      <div id="source-selector" class="source-selector" style="display:none"></div>
-      <div class="header-center">
-        <span id="session-label" class="session-label">Session: —</span>
-      </div>
+      <div id="session-label" class="session-label">Session: —</div>
       <div class="header-right">
         <span id="clock" class="header-clock"></span>
         <button id="disconnect-btn" class="btn-icon-only" title="断开连接">✕</button>
@@ -57,20 +54,13 @@
     </header>
 
     <main class="main-content">
-      <section class="andon-panel" id="andon-panel" data-status="DISCONNECTED">
-        <div class="andon-glow" id="andon-glow"></div>
-        <div class="andon-card">
-          <div class="andon-status-badge" id="andon-status-badge">
-            <span id="andon-status-icon" class="status-icon">●</span>
-            <span id="andon-status-text" class="status-text">DISCONNECTED</span>
-          </div>
-          <p id="andon-task" class="andon-task">等待连接...</p>
-          <div class="andon-stats">
-            <div class="stat"><span class="stat-label">Tools</span><span id="stat-tools" class="stat-value">0</span></div>
-            <div class="stat"><span class="stat-label">Errors</span><span id="stat-errors" class="stat-value">0</span></div>
-            <div class="stat"><span class="stat-label">Duration</span><span id="stat-duration" class="stat-value">00:00</span></div>
-          </div>
+      <section class="session-panel" id="session-panel">
+        <div id="root-badge" class="root-badge" data-status="IDLE">
+          <span id="root-status-icon" class="root-status-icon">●</span>
+          <span id="root-status-text" class="root-status-text">IDLE</span>
+          <span id="root-session-count" class="root-session-count">0 sessions</span>
         </div>
+        <div id="session-cards" class="session-cards"></div>
       </section>
 
       <section class="log-panel">

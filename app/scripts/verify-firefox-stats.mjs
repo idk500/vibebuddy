@@ -39,12 +39,13 @@ function testPage() {
   <div id="js-error"></div>
   <div id="connect-screen" class="screen active"></div>
   <div id="andon-screen" class="screen"></div>
-  <section id="andon-panel" data-status="DISCONNECTED">
-    <div id="andon-status-text">DISCONNECTED</div>
-    <div id="andon-task">等待连接...</div>
-    <div id="stat-tools">0</div>
-    <div id="stat-errors">0</div>
-    <div id="stat-duration">00:00</div>
+  <section id="session-panel">
+    <div id="root-badge" data-status="IDLE">
+      <span id="root-status-icon" class="root-status-icon">●</span>
+      <span id="root-status-text" class="root-status-text">IDLE</span>
+      <span id="root-session-count" class="root-session-count">0 sessions</span>
+    </div>
+    <div id="session-cards" class="session-cards"></div>
   </section>
   <div id="log-container"></div>
   <input id="server-url" value="127.0.0.1:0">
@@ -88,26 +89,33 @@ function testPage() {
         window.__vibeTest.handleWSMessage({ type: 'status', sourceId: 'firefox-stats', sessionId: 's1', status: 'THINKING', task: 'Firefox stats test', duration: 0, toolCount: 0, errorCount: 0 })
         await delay(1150)
         window.__vibeTest.renderStatsTick()
-        assert(text('stat-duration') !== '00:00', 'duration did not advance in Firefox DOM: ' + text('stat-duration'))
+        var stats = window.__vibeTest.getStats()
+        assert(stats.elapsed > 0, 'duration did not advance in Firefox: ' + stats.elapsed)
 
         window.__vibeTest.handleWSMessage({ type: 'tool', sourceId: 'firefox-stats', sessionId: 's1', id: 'tool-1', name: 'bash', status: 'started', args: {}, ts: Date.now() })
-        assert(text('stat-tools') === '1', 'tool start not counted: ' + text('stat-tools'))
+        stats = window.__vibeTest.getStats()
+        assert(stats.toolCount === 1, 'tool start not counted: ' + stats.toolCount)
         window.__vibeTest.handleWSMessage({ type: 'tool', sourceId: 'firefox-stats', sessionId: 's1', id: 'tool-1', name: 'bash', status: 'completed', args: {}, ts: Date.now() })
-        assert(text('stat-tools') === '1', 'tool completed double-counted: ' + text('stat-tools'))
+        stats = window.__vibeTest.getStats()
+        assert(stats.toolCount === 1, 'tool completed double-counted: ' + stats.toolCount)
         window.__vibeTest.handleWSMessage({ type: 'tool', sourceId: 'firefox-stats', sessionId: 's1', id: 'tool-1', name: 'bash', status: 'failed', args: {}, ts: Date.now() })
-        assert(text('stat-tools') === '1', 'duplicate failed double-counted tool: ' + text('stat-tools'))
-        assert(text('stat-errors') === '1', 'tool failed not counted as one error: ' + text('stat-errors'))
+        stats = window.__vibeTest.getStats()
+        assert(stats.toolCount === 1, 'duplicate failed double-counted tool: ' + stats.toolCount)
+        assert(stats.errorCount === 1, 'tool failed not counted as one error: ' + stats.errorCount)
         window.__vibeTest.handleWSMessage({ type: 'log', sourceId: 'firefox-stats', sessionId: 's1', level: 'error', message: 'Tool bash failed', ts: Date.now() })
-        assert(text('stat-errors') === '1', 'tool failure log double-counted: ' + text('stat-errors'))
+        stats = window.__vibeTest.getStats()
+        assert(stats.errorCount === 1, 'tool failure log double-counted: ' + stats.errorCount)
         window.__vibeTest.handleWSMessage({ type: 'log', sourceId: 'firefox-stats', sessionId: 's1', level: 'error', message: 'plain error', ts: Date.now() })
-        assert(text('stat-errors') === '2', 'plain error not counted: ' + text('stat-errors'))
+        stats = window.__vibeTest.getStats()
+        assert(stats.errorCount === 2, 'plain error not counted: ' + stats.errorCount)
 
         window.__vibeTest.handleWSMessage({ type: 'status', sourceId: 'firefox-stats', sessionId: 's1', status: 'IDLE', task: 'Done', duration: 0, toolCount: 0, errorCount: 0 })
-        var frozen = text('stat-duration')
+        var frozen = window.__vibeTest.getStats().elapsed
         await delay(1100)
         window.__vibeTest.renderStatsTick()
-        assert(text('stat-duration') === frozen, 'duration did not freeze after IDLE: ' + text('stat-duration') + ' !== ' + frozen)
-        await report({ ok: true, tools: text('stat-tools'), errors: text('stat-errors'), duration: text('stat-duration'), userAgent: navigator.userAgent })
+        stats = window.__vibeTest.getStats()
+        assert(stats.elapsed === frozen, 'duration did not freeze after IDLE: ' + stats.elapsed + ' !== ' + frozen)
+        await report({ ok: true, tools: stats.toolCount, errors: stats.errorCount, duration: stats.elapsed, userAgent: navigator.userAgent })
       } catch (err) {
         await report({ ok: false, error: err && err.message ? err.message : String(err), stack: err && err.stack ? err.stack : '' })
       }

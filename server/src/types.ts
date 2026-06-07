@@ -65,7 +65,6 @@ export interface QuestionMessage {
   type: 'question'
   id: string
   sourceId?: string
-  sessionID: string
   sessionId?: string
   questions: Array<{
     header: string
@@ -80,7 +79,6 @@ export interface PermissionMessage {
   type: 'permission'
   id: string
   sourceId?: string
-  sessionID: string
   sessionId?: string
   tool: string
   message: string

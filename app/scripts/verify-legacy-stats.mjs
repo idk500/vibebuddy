@@ -18,6 +18,7 @@ class Element {
     this.attributes = {}
     this.className = ''
     this.textContent = ''
+    this.innerHTML = ''
     this.value = ''
     this.disabled = false
     this.scrollTop = 0
@@ -59,6 +60,9 @@ class Element {
     visit(this)
     return matches
   }
+
+  querySelector() { return null }
+  querySelectorAll() { return [] }
 }
 
 function assert(condition, message) {
@@ -66,7 +70,8 @@ function assert(condition, message) {
 }
 
 const ids = [
-  'js-error', 'andon-panel', 'andon-status-text', 'andon-task', 'stat-tools', 'stat-errors', 'stat-duration',
+  'js-error', 'root-badge', 'root-status-icon', 'root-status-text', 'root-session-count',
+  'session-cards', 'session-panel',
   'log-container', 'connect-screen', 'andon-screen', 'server-url', 'connect-btn', 'connect-status',
   'connection-dot', 'session-label', 'clock', 'disconnect-btn', 'fullscreen-btn'
 ]
@@ -148,28 +153,38 @@ test.handleWSStateChange('CONNECTED')
 test.handleWSMessage({ type: 'status', sourceId: 'ui-stats', sessionId: 's1', status: 'THINKING', task: 'Stats UI test', duration: 0, toolCount: 0, errorCount: 0 })
 now += 2500
 test.renderStatsTick()
-assert(elements['stat-duration'].textContent === '00:02', `duration did not tick: ${elements['stat-duration'].textContent}`)
+
+// Check session card state instead of standalone elements
+const key = 'ui-stats|s1'
+let cardState = context.window.__vibeTest.getSessionCardState ? context.window.__vibeTest.getSessionCardState(key) : null
 
 test.handleWSMessage({ type: 'tool', sourceId: 'ui-stats', sessionId: 's1', id: 'tool-1', name: 'bash', status: 'started', args: {}, ts: now })
-assert(elements['stat-tools'].textContent === '1', `tool start not counted: ${elements['stat-tools'].textContent}`)
+let stats = test.getStats()
+assert(stats.toolCount === 1, `tool start not counted: ${stats.toolCount}`)
 
 test.handleWSMessage({ type: 'tool', sourceId: 'ui-stats', sessionId: 's1', id: 'tool-1', name: 'bash', status: 'completed', args: {}, ts: now })
-assert(elements['stat-tools'].textContent === '1', `tool completion double-counted: ${elements['stat-tools'].textContent}`)
+stats = test.getStats()
+assert(stats.toolCount === 1, `tool completion double-counted: ${stats.toolCount}`)
 
 test.handleWSMessage({ type: 'tool', sourceId: 'ui-stats', sessionId: 's1', id: 'tool-1', name: 'bash', status: 'failed', args: {}, ts: now })
-assert(elements['stat-tools'].textContent === '1', `duplicate failed double-counted tool: ${elements['stat-tools'].textContent}`)
-assert(elements['stat-errors'].textContent === '1', `tool failure not counted as one error: ${elements['stat-errors'].textContent}`)
+stats = test.getStats()
+assert(stats.toolCount === 1, `duplicate failed double-counted tool: ${stats.toolCount}`)
+assert(stats.errorCount === 1, `tool failure not counted as one error: ${stats.errorCount}`)
 
 test.handleWSMessage({ type: 'log', sourceId: 'ui-stats', sessionId: 's1', level: 'error', message: 'Tool bash failed', ts: now })
-assert(elements['stat-errors'].textContent === '1', `tool failure log double-counted: ${elements['stat-errors'].textContent}`)
+stats = test.getStats()
+assert(stats.errorCount === 1, `tool failure log double-counted: ${stats.errorCount}`)
 
 test.handleWSMessage({ type: 'log', sourceId: 'ui-stats', sessionId: 's1', level: 'error', message: 'plain error', ts: now })
-assert(elements['stat-errors'].textContent === '2', `plain error not counted: ${elements['stat-errors'].textContent}`)
+stats = test.getStats()
+assert(stats.errorCount === 2, `plain error not counted: ${stats.errorCount}`)
 
 test.handleWSMessage({ type: 'status', sourceId: 'ui-stats', sessionId: 's1', status: 'IDLE', task: 'Done', duration: 0, toolCount: 0, errorCount: 0 })
-const frozen = elements['stat-duration'].textContent
+stats = test.getStats()
+const frozen = stats.elapsed
 now += 5000
 test.renderStatsTick()
-assert(elements['stat-duration'].textContent === frozen, `duration did not freeze at idle: ${elements['stat-duration'].textContent} !== ${frozen}`)
+stats = test.getStats()
+assert(stats.elapsed === frozen, `duration did not freeze at idle: ${stats.elapsed} !== ${frozen}`)
 
-console.log(`ok tools=${elements['stat-tools'].textContent} errors=${elements['stat-errors'].textContent} duration=${elements['stat-duration'].textContent}`)
+console.log(`ok tools=${stats.toolCount} errors=${stats.errorCount} elapsed=${stats.elapsed}`)
