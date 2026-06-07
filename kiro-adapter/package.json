@@ -1,0 +1,12 @@
+{
+  "name": "vibebuddy-kiro-adapter",
+  "version": "0.1.0",
+  "description": "VibeBuddy adapter for Kiro — Tier B integration via Agent Hooks (PoC)",
+  "type": "module",
+  "bin": {
+    "vibebuddy-kiro-emit": "emit.js"
+  },
+  "scripts": {
+    "test:emit": "node emit.js --event promptSubmit"
+  }
+}
