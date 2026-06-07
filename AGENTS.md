@@ -37,6 +37,12 @@ npm run lint
 # ESLint 自动修复
 npm run lint:fix
 
+# 单元测试 (Vitest)
+npm run test
+
+# 测试覆盖率
+npm run test:coverage
+
 # === App (手机端 PWA) ===
 
 # 无构建步骤!
@@ -49,7 +55,9 @@ npm run lint:fix
 npx eslint ../app/js/
 
 # === 质量全检 ===
-npm run typecheck && npm run lint
+npm run check    # typecheck + lint + test (推荐提交前运行)
+# 或单独运行:
+npm run typecheck && npm run lint && npm run test
 
 # === 真机测试 ===
 # 1. PC 端启动: cd server && npm run dev
@@ -63,58 +71,67 @@ npm run typecheck && npm run lint
 vibe-companion/
 ├── docs/                    # A-SPICE 文档
 │   ├── requirements.md      # SYS.1 + SYS.2 需求
+│   ├── specification.md     # SWE.1 技术规格
 │   ├── architecture.md      # SYS.3 + SWE.2 架构
-│   ├── plan.md              # 开发计划
+│   ├── plan.md              # 开发计划 + A-SPICE 映射
+│   ├── trace-matrix.md      # 需求追溯矩阵
+│   ├── test-strategy.md     # SWE.4 + SWE.5 测试策略
+│   ├── ENGINEERING_REVIEW.md # 工程审查报告
+│   ├── adapter-architecture.md # Adapter 架构分析 + Kiro 接入
 │   ├── operations.md        # 启动/安装/排障手册
 │   ├── protocol.md          # Relay Hub 协议
 │   └── acceptance-phase-1.5.md # 验收记录
 ├── server/                  # PC 端 Relay Server
 │   ├── src/
 │   │   ├── index.ts         # 入口: HTTP + WebSocket 启动
-│   │   ├── opencode.ts      # OpenCode SDK 客户端封装
-│   │   ├── relay.ts         # 事件中继逻辑
-│   │   ├── audio.ts         # 音频接收处理
-│   │   └── types.ts         # 共享类型
+│   │   ├── hub.ts           # Relay Hub 核心 (source/terminal/pending/reply)
+│   │   ├── state-machine.ts # 形式化安灯状态机
+│   │   ├── opencode.ts      # OpenCode SDK 客户端封装 (诊断路径)
+│   │   ├── types.ts         # 共享类型
+│   │   ├── hub.test.ts      # Hub 单元测试
+│   │   └── state-machine.test.ts # 状态机单元测试
+│   ├── vitest.config.ts
 │   ├── package.json
 │   ├── tsconfig.json
 │   └── .eslintrc.cjs
 ├── app/                     # 手机端 PWA (零构建)
-│   ├── index.html           # 单页应用
+│   ├── index.html           # 单页应用 (加载 js/legacy-app.js)
 │   ├── manifest.json        # PWA 清单
 │   ├── sw.js                # Service Worker
 │   ├── css/
 │   │   └── main.css         # 全局样式 + 安灯主题
 │   └── js/
-│       ├── app.js           # 应用状态 & 初始化
-│       ├── ws.js            # WebSocket 连接管理
-│       ├── andon.js         # 安灯状态渲染
-│       ├── log.js           # 活动日志面板
-│       ├── voice.js         # 麦克风录音 (Phase 2)
-│       └── util.js          # 工具函数
+│       └── legacy-app.js    # 单文件应用 (IIFE, 无 ES Module, 最大兼容)
+├── opencode-plugin/         # OpenCode adapter (plugin 形式)
+│   └── index.js             # 事件 hook + permission.ask 闭环
+├── zcode-adapter/           # ZCode adapter (JSONL log tailing)
+│   └── index.js             # 日志监控 + 事件转发
 ├── AGENTS.md                # 本文件
 └── .gitignore
 ```
 
+> **注意**: 早期文档描述的模块化 `app/js/{app,ws,andon,log,voice,util}.js` 已在 Phase 1.6 删除——它们从未被 `index.html` 引用。实际运行的是单文件 `legacy-app.js`（含 WSClient / SessionCardRenderer / LogRenderer）。同样，`server/src/relay.ts` 和 `audio.ts` 已删除（前者逻辑并入 hub.ts，后者为 Phase 2 占位，届时再建）。
+
 ## 数据流
 
 ```
-OpenCode Plugin / future adapters
+OpenCode Plugin / ZCode Adapter / 未来 adapters
   ↓ HTTP /api/register + /api/event
-Relay Hub → source registry / pending request registry / reply queues
-  ↓ WebSocket broadcast
-ws.js → 接收消息 → andon.js → DOM 更新
-                        ↘ log.js → 日志追加
+Relay Hub (hub.ts) → source registry / pending request registry / reply queues
+  ↓ WebSocket broadcast (/ws)
+legacy-app.js → 接收消息 → SessionCardRenderer → DOM 更新
+                              ↘ LogRenderer → 日志追加
 
-Phone prompt reply
-  ↓ WebSocket permission_reply/question_reply
+Terminal prompt reply
+  ↓ WebSocket permission_reply/question_reply (/ws)
 Relay Hub → source-bound reply queue + reply_ack
   ↓ HTTP /api/replies polling
 OpenCode Plugin → permission.ask output.status
 
-# 语音 (Phase 2)
-voice.js → MediaRecorder → WebSocket binary frame
+# 语音 (Phase 2, 尚未实现)
+legacy-app.js → MediaRecorder → WebSocket binary frame
   ↓
-audio.ts → 解码 → PC 音频输出
+(server 二进制处理) → PC 音频输出
 ```
 
 ## 开发约定
@@ -149,10 +166,9 @@ audio.ts → 解码 → PC 音频输出
 ## 测试与验证
 
 ### 提交前必须
-1. `npm run typecheck` 通过 (server)
-2. `npm run lint` 无 error (server + app)
-3. PC 端 `npm run dev` 启动不报错
-4. 手机浏览器打开页面不白屏
+1. `npm run check` 通过 (typecheck + lint + test, server)
+2. PC 端 `npm run dev` 启动不报错
+3. 手机浏览器打开页面不白屏
 
 ### 真机测试清单 (Phase 1)
 - [ ] PC 启动 server，手机浏览器打开 PWA

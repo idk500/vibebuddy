@@ -1,10 +1,12 @@
-# VibeCoding Companion — 开发计划
+# VibeBuddy — 开发计划
 
-> 版本: v0.1.0 | 日期: 2026-05-25 | A-SPICE 对齐
+> 版本: v0.1.5 | 日期: 2026-06-06 | A-SPICE 对齐
 
 ## 开发阶段
 
-### Phase 1: MVP 安灯看板 (v0.1.0)
+> 状态图例：✅ 已完成 | 🔄 进行中 | ⏳ 待开发
+
+### Phase 1: MVP 安灯看板 (v0.1.0) — ✅ 已完成
 
 **目标**: 手机实时显示 OpenCode 任务状态
 
@@ -30,7 +32,7 @@
 
 ---
 
-### Phase 1.5: Multi-source Relay Hub + Reliable Remote Approvals (v0.1.5)
+### Phase 1.5: Multi-source Relay Hub + Reliable Remote Approvals (v0.1.5) — ✅ 已完成
 
 **目标**: 将单 OpenCode 转发器升级为多 source/session Relay Hub，并让手机确认真正闭环到原始工具请求。
 
@@ -51,7 +53,7 @@
 - 更新后的 `docs/requirements.md`、`docs/architecture.md`、`docs/plan.md`
 - Relay Hub implementation in `server/src/`
 - OpenCode plugin implementation in `opencode-plugin/index.js` and installed copy sync
-- PWA prompt/ACK UI updates in `app/js/app.js`
+- PWA prompt/ACK UI updates in `app/js/legacy-app.js`
 - 自动化验收脚本或等价本地验证命令输出
 
 **验收标准**:
@@ -62,6 +64,43 @@
 5. `cd server && npx tsc --noEmit` 通过
 
 **前置条件**: Phase 1 status display 基本可用
+
+---
+
+### Phase 1.6: 工程加固 (v0.1.6) — ✅ 已完成
+
+**目标**: 补齐 A-SPICE 工程实践，消除文档与代码脱钩。
+
+**范围**:
+- [SWE.3] 拆分 `index.ts` → `hub.ts`（Relay Hub 核心）+ `state-machine.ts`（形式化状态机）
+- [SWE.4] 引入 Vitest，新增 33 个单元测试（状态机 23 + Hub 路由 10）
+- [SWE.1] 新增技术规格 `specification.md`
+- [追溯] 新增需求追溯矩阵 `trace-matrix.md`
+- [SWE.5] 新增测试策略 `test-strategy.md`
+- [审查] 新增工程审查报告 `ENGINEERING_REVIEW.md`
+- 删除死代码：未使用的 `app/js` 模块化文件、`server/src/relay.ts`
+- 统一品牌名为 VibeBuddy，同步全部文档
+
+**验收标准**:
+1. `npm run check`（typecheck + lint + test）通过
+2. 33 个单元测试全部通过
+3. 文档与代码模块结构一致
+
+**前置条件**: Phase 1.5 完成
+
+---
+
+### Phase 5: 统一 Adapter 框架 + 多工具接入 (v0.2.x) — ⏳ 待开发
+
+**目标**: 降低新 AI 工具接入成本，从"每个工具一套适配代码"演进为"统一 adapter SDK + 工具特定映射层"。
+
+**范围**:
+- 提取 `@vibebuddy/adapter-core` 共享库（注册、心跳、事件发送、回复轮询、状态机映射）
+- OpenCode plugin、ZCode adapter 重构为基于 core 的薄映射层
+- 新增 Kiro adapter（接入方式见 `docs/adapter-architecture.md`）
+- 定义 adapter 能力分级（events-only / permission-sync / question-sync）
+
+**前置条件**: Phase 1.6 完成；详见 `docs/adapter-architecture.md`
 
 ---
 
@@ -106,22 +145,27 @@
 
 ## A-SPICE 过程映射
 
-| A-SPICE 过程 | 本项目实践 | 产出物 |
-|-------------|-----------|--------|
-| SYS.1 利益相关方需求 | 用户需求整理 | docs/requirements.md §1-2 |
-| SYS.2 系统需求分析 | 功能/非功能需求细化 | docs/requirements.md §2-6 |
-| SYS.3 系统架构 | 系统组件 + 数据流设计 | docs/architecture.md |
-| SYS.4 系统集成验证 | 集成测试清单 | docs/plan.md 验收标准 |
-| SWE.1 软件需求 | 每个 Phase 的功能列表 | 本文档 Phase 定义 |
-| SWE.2 软件架构 | 技术栈 + 模块设计 | docs/architecture.md §2 |
-| SWE.3 详细设计+实现 | 代码实现 + AGENTS.md 约定 | 源代码 + AGENTS.md |
-| SWE.4 单元验证 | ESLint + TypeScript 类型检查 | CI/local 检查结果 |
-| SWE.5 集成测试 | 手动功能测试清单 | docs/plan.md 验收标准 |
-| SWE.6 资质测试 | 真机端到端测试 | 测试报告 |
+| A-SPICE 过程 | 本项目实践 | 产出物 | 状态 |
+|-------------|-----------|--------|------|
+| SYS.1 利益相关方需求 | 用户需求整理 | docs/requirements.md §1 | ✅ |
+| SYS.2 系统需求分析 | 功能/非功能需求细化 | docs/requirements.md §2-7 | ✅ |
+| SYS.3 系统架构 | 系统组件 + 数据流设计 | docs/architecture.md | ✅ |
+| SYS.4 系统集成验证 | E2E 验收记录 | docs/acceptance-phase-1.5.md | ✅ |
+| SWE.1 软件需求 | 技术规格说明书 | docs/specification.md | ✅ |
+| SWE.2 软件架构 | 技术栈 + 模块设计 | docs/architecture.md §2 | ✅ |
+| SWE.3 详细设计+实现 | 状态机规格 + 代码 + AGENTS.md | state-machine.ts + 源代码 | ✅ |
+| SWE.4 单元验证 | Vitest 单元测试 + 类型检查 + Lint | server/src/*.test.ts (33 用例) | ✅ |
+| SWE.5 集成测试 | 测试策略 + Firefox E2E 脚本 | docs/test-strategy.md + app/scripts | ✅ |
+| SWE.6 资质测试 | 真机端到端测试 | docs/android-browser-test-plan.md | 🔄 |
+| 支持过程 追溯性 | 需求追溯矩阵 | docs/trace-matrix.md | ✅ |
+| 支持过程 质量保证 | 工程审查报告 | docs/ENGINEERING_REVIEW.md | ✅ |
 
-## 缩减说明
+## A-SPICE 裁剪说明
 
-- **不设独立测试团队** — 开发者自测 + 用户功能审查
-- **不设变更控制委员会** — 版本管理通过 Git commit
-- **不设需求追溯矩阵** — 功能 ID (F01-F44) 直接映射到代码模块
+作为个人/小团队项目，对 A-SPICE 做如下裁剪（裁剪本身是有意识的决策，而非遗漏）：
+
+- **不设独立测试团队** — 开发者自测 + 用户功能审查；但保留单元测试 + E2E + 测试策略文档（SWE.4/SWE.5 不裁剪）
+- **不设变更控制委员会（SUP.10 简化）** — 版本管理通过 Git Conventional Commits，每个 task 一次提交
+- **保留需求追溯矩阵** — 见 `trace-matrix.md`，功能 ID (F01-F58) → 规格 → 代码 → 测试全链路追溯（此前版本曾裁剪，Phase 1.6 恢复）
+- **CI/CD（SUP.8 简化）** — 暂用本地 `npm run check` 替代流水线，后续引入 GitHub Actions
 - **每 Phase 作为一个发布单元** — 减少管理开销

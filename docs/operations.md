@@ -1,6 +1,6 @@
-# VibeCoding Companion — Operations Guide
+# VibeBuddy — Operations Guide
 
-This runbook explains how to start, verify, and troubleshoot the current Phase 1.5 system.
+This runbook explains how to start, verify, and troubleshoot the current system (Phase 1.5 + 1.6).
 
 ## 1. Start the Relay Hub
 
@@ -15,10 +15,10 @@ npm run dev
 Expected output includes:
 
 ```text
-[vibe-companion] Starting server...
+[vibebuddy] Starting server...
 Port:       4097
-[vibe-companion] Ready at http://0.0.0.0:4097
-[vibe-companion] WebSocket at ws://0.0.0.0:4097/ws
+[vibebuddy] Ready at http://0.0.0.0:4097
+[vibebuddy] WebSocket at ws://0.0.0.0:4097/ws
 ```
 
 ### Detached/background start
@@ -213,7 +213,7 @@ If it is an old relay, stop that terminal/process and restart from `server/`.
 
 ### Browser compatibility issue
 
-The active frontend uses plain script modules in `app/js/app.js`. Target is Android 6+ / Chrome 53+. If an old browser shows a blank page, open the PC browser console or the on-page red error bar and check module support/runtime errors.
+The active frontend uses a single non-module bundle at `app/js/legacy-app.js` (loaded via `<script src="js/legacy-app.js">`). Target is Android 6+ / Chrome 53+. If an old browser shows a blank page, open the PC browser console or the on-page red error bar and check runtime errors.
 
 ## 8. Validation commands before committing
 
