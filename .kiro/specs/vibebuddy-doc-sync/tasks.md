@@ -16,9 +16,11 @@
 
 - [x] 1. 更新 requirements.md — 品牌名统一为 VibeBuddy，标记已完成功能状态
 - [x] 2. 更新 architecture.md — 反映实际模块结构（上个会话完成，已核验）
-- [ ] 3. 更新 protocol.md — 品牌名、WebSocket /ws 路径、章节编号、字段命名
-- [ ] 4. 更新 plan.md + operations.md — 品牌名、阶段状态、A-SPICE 映射一致性
-- [ ] 5. 更新 AGENTS.md — 反映 hub.ts/state-machine.ts/legacy-app.js 实际结构
-- [ ] 6. 提交基础工作 — code 重构 + docs 同步分组提交
-- [ ] 7. Adapter 架构分析 + Kiro 接入 — 总结 OpenCode/ZCode 模式，设计统一接入，反思总结
-- [ ] 8. 提交 task 7 成果
+- [x] 3. 更新 protocol.md — 品牌名、WebSocket /ws 路径、章节编号、字段命名
+- [x] 4. 更新 plan.md + operations.md — 品牌名、阶段状态、A-SPICE 映射一致性
+- [x] 5. 更新 AGENTS.md — 反映 hub.ts/state-machine.ts/legacy-app.js 实际结构
+- [x] 6. 提交基础工作 — code 重构 + docs 同步分组提交
+- [x] 7. Adapter 架构分析 + Kiro 接入 — 总结 OpenCode/ZCode 模式，设计统一接入，PoC 验证，反思总结
+- [x] 8. 提交 task 7 成果
+
+## 全部完成 ✅
