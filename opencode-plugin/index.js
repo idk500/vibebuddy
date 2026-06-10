@@ -1,5 +1,7 @@
 /** VibeCoding Companion — OpenCode Plugin */
 
+import { createAdapter, makeSourceId } from '../adapter-core/index.js'
+
 const RELAY_HOST = env("VIBE_RELAY_HOST") || "127.0.0.1:4097"
 const RELAY_BASE = "http://" + RELAY_HOST
 const REQUEST_TIMEOUT_MS = Number(env("VIBE_PERMISSION_TIMEOUT_MS") || "120000")
@@ -19,17 +21,19 @@ function getCwd() {
   try { return globalThis.process && globalThis.process.cwd ? globalThis.process.cwd() : "" } catch { return "" }
 }
 
-function hashText(text) {
-  let hash = 2166136261
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(16)
-}
-
 const CWD = getCwd()
-const SOURCE_ID = "opencode:" + getProcessPid() + ":" + hashText(CWD || "unknown")
+const SOURCE_ID = makeSourceId("opencode", { pid: getProcessPid(), cwd: CWD || "unknown" })
+
+// 共享 adapter-core：统一传输 / 注册 / 心跳 / 权限轮询。
+const adapter = createAdapter({
+  relayUrl: RELAY_BASE,
+  tool: "opencode",
+  sourceId: SOURCE_ID,
+  name: "OpenCode " + getProcessPid(),
+  cwd: CWD,
+  capabilities: ["events", "permission.ask", "question.asked"],
+  pollIntervalMs: POLL_INTERVAL_MS,
+})
 
 function now() { return Date.now() }
 
@@ -209,25 +213,11 @@ function toolApprovalMessageFromInput(input, sessionId) {
 }
 
 async function postJson(path, msg) {
-  try {
-    const res = await fetch(RELAY_BASE + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(msg) })
-    return res.ok
-  } catch {
-    return false
-  }
-}
-
-async function getJson(path) {
-  try {
-    const res = await fetch(RELAY_BASE + path)
-    if (!res.ok) return null
-    return await res.json()
-  } catch {
-    return null
-  }
+  return adapter._post(path, msg)
 }
 
 async function registerSource(serverUrl) {
+  // serverUrl 可能在加载时才知道；core adapter 注册不含 serverUrl，这里补发一次带 serverUrl 的注册。
   return await postJson("/api/register", {
     sourceId: SOURCE_ID,
     tool: "opencode",
@@ -249,40 +239,30 @@ async function sendToRelay(messages) {
   for (const msg of messages) await postJson("/api/event", msg)
 }
 
-async function waitForPermissionReply(requestIdValue, deadline) {
-  while (now() < deadline) {
-    const data = await getJson("/api/replies?sourceId=" + encodeURIComponent(SOURCE_ID))
-    const replies = data && Array.isArray(data.replies) ? data.replies : []
-    for (const reply of replies) {
-      if (reply && reply.kind === "permission" && reply.requestId === requestIdValue) return reply
-    }
-    await new Promise(function(resolve) { setTimeout(resolve, POLL_INTERVAL_MS) })
-  }
-  return null
-}
-
 async function handlePermissionAsk(input, output) {
   const permission = input && (input.permission || input)
   const sessionId = normalizeSessionId(permission)
   const msg = withSource(permissionMessageFromInput(permission, sessionId), sessionId)
-  await sendToRelay([msg, withSource({ type: "log", level: "warn", message: "Permission waiting on phone: " + msg.tool, ts: now() }, sessionId)])
+  await sendToRelay([withSource({ type: "log", level: "warn", message: "Permission waiting on phone: " + msg.tool, ts: now() }, sessionId)])
 
-  const reply = await waitForPermissionReply(msg.id, now() + REQUEST_TIMEOUT_MS)
-  if (!reply || reply.reply === "reject") {
-    output.status = "deny"
-    return
-  }
-  output.status = "allow"
+  // 共享 core 权限闭环：发送已构造好的 permission 事件后轮询回复。
+  // 复用已生成的 requestId (msg.id)，安全默认值为 deny。
+  const decision = await adapter.askPermission(sessionId, {
+    id: msg.id, tool: msg.tool, message: msg.message, patterns: msg.patterns,
+  }, { timeoutMs: REQUEST_TIMEOUT_MS })
+  output.status = decision === "allow" ? "allow" : "deny"
 }
 
 async function handleToolExecuteBefore(input, output) {
   if (!FORCE_TOOL_APPROVAL) return
   const sessionId = normalizeSessionId(input)
   const msg = withSource(toolApprovalMessageFromInput(input, sessionId), sessionId)
-  await sendToRelay([msg, withSource({ type: "log", level: "warn", message: "Tool approval waiting on phone: " + msg.tool, ts: now() }, sessionId)])
+  await sendToRelay([withSource({ type: "log", level: "warn", message: "Tool approval waiting on phone: " + msg.tool, ts: now() }, sessionId)])
 
-  const reply = await waitForPermissionReply(msg.id, now() + REQUEST_TIMEOUT_MS)
-  if (!reply || reply.reply === "reject") {
+  const decision = await adapter.askPermission(sessionId, {
+    id: msg.id, tool: msg.tool, message: msg.message, patterns: msg.patterns,
+  }, { timeoutMs: REQUEST_TIMEOUT_MS })
+  if (decision !== "allow") {
     throw new Error("Tool execution denied by Vibe Companion")
   }
 }

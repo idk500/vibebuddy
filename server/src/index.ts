@@ -202,8 +202,15 @@ function handleHttp(
 ): void {
   const urlPath = req.url?.split('?')[0] ?? '/'
 
+  // Short aliases for old devices
+  if (urlPath === '/l' || urlPath === '/lite') {
+    res.writeHead(302, { Location: '/legacy.html' })
+    return void res.end()
+  }
+
   if (urlPath === '/api/test' && req.method === 'POST') return handleApiTest(req, res, config, clients)
   if (urlPath === '/api/diagnostics' && req.method === 'GET') return handleApiDiagnostics(res, clients, hub)
+  if (urlPath === '/api/poll' && req.method === 'GET') return handleApiPoll(res, hub)
   if (urlPath === '/api/register' && req.method === 'POST') return handleApiRegister(req, res, clients, hub)
   if (urlPath === '/api/event' && req.method === 'POST') return handleApiEvent(req, res, clients, hub)
   if (urlPath === '/api/replies' && req.method === 'GET') return handleApiReplies(req, res, hub)
@@ -234,6 +241,33 @@ function handleApiDiagnostics(res: ServerResponse, clients: Set<WebSocket>, hub:
     pendingRequests: Array.from(hub.state.pendingRequests.values()),
     stats: hub.state.stats,
   })
+}
+
+function handleApiPoll(res: ServerResponse, hub: ReturnType<typeof createHub>): void {
+  const sources: Array<{ sourceId: string; name: string; status: string; task: string; toolCount: number; errorCount: number }> = []
+  for (const [sourceId, source] of hub.state.sources) {
+    let bestStatus: { status: string; task: string; toolCount: number; errorCount: number } | undefined
+    for (const [, snap] of hub.state.lastStatuses) {
+      if (snap.sourceId === sourceId) {
+        bestStatus = { status: snap.status, task: snap.task, toolCount: snap.toolCount, errorCount: snap.errorCount }
+      }
+    }
+    sources.push({
+      sourceId,
+      name: source.name ?? sourceId.slice(0, 16),
+      status: bestStatus?.status ?? 'IDLE',
+      task: bestStatus?.task ?? '',
+      toolCount: bestStatus?.toolCount ?? 0,
+      errorCount: bestStatus?.errorCount ?? 0,
+    })
+  }
+  // CORS for old browsers
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Cache-Control': 'no-cache',
+  })
+  res.end(JSON.stringify({ ok: true, sources }))
 }
 
 function handleApiRegister(req: IncomingMessage, res: ServerResponse, clients: Set<WebSocket>, hub: ReturnType<typeof createHub>): void {

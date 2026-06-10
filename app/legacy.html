@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VibeBuddy</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f172a;color:#f1f5f9;font-family:sans-serif;font-size:14px;padding:0}
+.header{background:#1e293b;padding:6px 10px;border-bottom:1px solid #334155;font-size:12px}
+.header b{color:#f1f5f9}
+.header span{color:#64748b;margin-left:8px}
+.root{background:#1e293b;padding:6px 10px;border-bottom:1px solid #334155;font-weight:bold;font-size:13px;text-align:center}
+.cards{padding:4px}
+.card{background:#1e293b;border:1px solid #334155;border-left:4px solid #334155;margin-bottom:4px;padding:6px 8px;font-size:12px}
+.card .row{display:block}
+.card .dot{display:inline-block;width:8px;height:8px;border-radius:50%;vertical-align:middle;margin-right:4px}
+.card .name{font-weight:bold}
+.card .st{float:right;font-size:11px;font-weight:bold}
+.card .task{color:#94a3b8;font-size:11px;margin-top:2px}
+.card .stats{color:#64748b;font-size:10px;margin-top:2px}
+.log{padding:4px;border-top:1px solid #334155}
+.log .title{font-size:10px;text-transform:uppercase;color:#64748b;padding:2px 4px}
+.log .entry{font-size:10px;padding:1px 4px;color:#94a3b8;border-bottom:1px solid rgba(51,65,85,0.3)}
+.log .entry .t{color:#64748b;margin-right:4px}
+</style>
+</head>
+<body>
+<div class="header"><b>VibeBuddy</b> <span id="clock">--:--</span></div>
+<div class="root" id="root">IDLE</div>
+<div class="cards" id="cards"></div>
+<div class="log">
+  <div class="title">Activity Log</div>
+  <div id="log"></div>
+</div>
+<script>
+var COLORS={IDLE:'#3b82f6',THINKING:'#f59e0b',EXECUTING:'#10b981',ERROR:'#ef4444',COMPLETE:'#34d399',DISCONNECTED:'#475569'};
+var PRIORITY={ERROR:5,EXECUTING:4,THINKING:3,IDLE:2,COMPLETE:1,DISCONNECTED:0};
+var prevData=null;
+var logEntries=[];
+function $(id){return document.getElementById(id)}
+function pad(n){return n<10?'0'+n:''+n}
+function esc(s){var d=document.createElement('div');d.appendChild(document.createTextNode(s));return d.innerHTML}
+function poll(){
+  var x;
+  try{x=new XMLHttpRequest()}catch(e){try{x=new ActiveXObject('Msxml2.XMLHTTP')}catch(e2){return}}
+  x.open('GET','/api/poll',true);
+  x.onreadystatechange=function(){
+    if(x.readyState!=4)return;
+    try{var d=JSON.parse(x.responseText);if(d.ok)render(d.sources)}catch(e){}
+  };
+  x.send(null);
+}
+function render(sources){
+  var worst='IDLE',wp=0;
+  var h='';
+  for(var i=0;i<sources.length;i++){
+    var s=sources[i];
+    var c=COLORS[s.status]||COLORS.IDLE;
+    var p=PRIORITY[s.status]||0;
+    if(p>wp){wp=p;worst=s.status}
+    var nm=esc(s.name||s.sourceId.slice(0,16));
+    var st=s.status;
+    var tk=esc(s.task||'');
+    h+='<div class="card" style="border-left-color:'+c+'">'
+      +'<span class="row"><span class="dot" style="background:'+c+'"></span>'
+      +'<span class="name">'+nm+'</span>'
+      +'<span class="st" style="color:'+c+'">'+st+'</span></span>'
+      +(tk?'<div class="task">'+tk+'</div>':'')
+      +'<div class="stats">Tools: '+s.toolCount+' | Errors: '+s.errorCount+'</div>'
+      +'</div>';
+    // log changes
+    if(prevData){
+      var old=findSrc(prevData,s.sourceId);
+      if(old&&old.status!==s.status){
+        addLog(s.sourceId.slice(0,12)+' '+old.status+' -> '+s.status);
+      }
+    }
+  }
+  $('cards').innerHTML=h;
+  var rc=COLORS[worst]||COLORS.IDLE;
+  $('root').style.color=rc;
+  $('root').style.borderBottomColor=rc;
+  $('root').textContent=worst+' ('+sources.length+')';
+  prevData=sources;
+  var now=new Date();
+  $('clock').textContent=pad(now.getHours())+':'+pad(now.getMinutes());
+}
+function findSrc(arr,sid){
+  for(var i=0;i<arr.length;i++){if(arr[i].sourceId===sid)return arr[i]}
+  return null;
+}
+function addLog(msg){
+  var now=new Date();
+  var ts=pad(now.getHours())+':'+pad(now.getMinutes())+':'+pad(now.getSeconds());
+  logEntries.push('<div class="entry"><span class="t">'+ts+'</span>'+esc(msg)+'</div>');
+  if(logEntries.length>30)logEntries.shift();
+  $('log').innerHTML=logEntries.join('');
+}
+poll();
+setInterval(poll,2000);
+</script>
+</body>
+</html>

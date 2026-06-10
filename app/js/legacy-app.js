@@ -314,6 +314,13 @@
     var card = createElement('div', {
       className: 'session-card' + (isActive ? ' session-card-active' : '') + (isExpanded ? ' session-card-expanded' : '')
     })
+    // Every card gets its own status color as left border + tinted background
+    var statusColor = STATUS_COLORS[s.status] || STATUS_COLORS.IDLE
+    card.style.borderLeftColor = statusColor
+    card.style.borderLeftWidth = '3px'
+    card.style.background = isActive
+      ? hexToRgba(statusColor, 0.12)
+      : hexToRgba(statusColor, 0.04)
 
     // Summary row
     var summary = createElement('div', { className: 'session-card-summary' })

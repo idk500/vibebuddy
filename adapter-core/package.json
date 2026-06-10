@@ -1,0 +1,15 @@
+{
+  "name": "vibebuddy-adapter-core",
+  "version": "0.1.0",
+  "description": "Shared core for VibeBuddy adapters — identity, transport, canonical events, permission loop",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./identity": "./identity.js",
+    "./mapping": "./mapping.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

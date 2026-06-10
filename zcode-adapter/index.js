@@ -10,10 +10,9 @@
  */
 
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { createHash } from 'node:crypto'
-import { request as httpRequest } from 'node:http'
+import { createAdapter, makeSourceId } from '../adapter-core/index.js'
 
 // ── Configuration ──────────────────────────────────────
 
@@ -58,26 +57,12 @@ function checkStaleSessions() {
   }
 }
 
-// ── HTTP helpers ───────────────────────────────────────
+// ── HTTP transport (shared via adapter-core) ───────────
 
+// 复用 core 的 fetch 传输，避免各 adapter 自写 node:http。
+const transport = createAdapter({ relayUrl: RELAY_URL, tool: 'zcode', sourceId: 'zcode:_transport' })
 function postJson(path, body) {
-  const url = RELAY_URL + path
-  const data = JSON.stringify(body)
-  return new Promise((resolve) => {
-    const req = httpRequest(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, (res) => {
-      let chunks = ''
-      res.on('data', (c) => { chunks += c })
-      res.on('end', () => {
-        try { resolve(JSON.parse(chunks)) } catch { resolve(null) }
-      })
-    })
-    req.on('error', (err) => {
-      console.error(`[adapter] POST ${path} failed: ${err.message}`)
-      resolve(null)
-    })
-    req.write(data)
-    req.end()
-  })
+  return transport._post(path, body)
 }
 
 // ── Session title lookup ───────────────────────────────
@@ -119,10 +104,11 @@ function getSessionTitle(sessionId) {
 // ── Session management ─────────────────────────────────
 
 function getSession(sessionId) {
+  if (!sessionId) return null
   if (!sessions.has(sessionId)) {
     // Subagent sessions have parentSessionId in context
     sessions.set(sessionId, {
-      sourceId: 'zcode:' + sessionId.slice(0, 24),
+      sourceId: makeSourceId('zcode', { seed: sessionId }),
       registered: false,
       title: getSessionTitle(sessionId) || sessionId.slice(0, 12),
       runningTools: new Set(),
@@ -143,6 +129,7 @@ function getEffectiveSession(entry) {
   // If this is a subagent session, find the parent
   if (sid && sid.includes('_subagent_') && ctx.parentSessionId) {
     const parent = getSession(ctx.parentSessionId)
+    if (!parent) return null
     // Track subagent info on parent
     const agentType = ctx.agentType || 'Agent'
     const existing = parent.activeSubagents.find(s => s.sessionId === sid)
@@ -162,13 +149,13 @@ function getEffectiveSession(entry) {
 
 async function registerSession(state) {
   if (state.registered) return
-  const res = await postJson('/api/register', {
+  const ok = await postJson('/api/register', {
     sourceId: state.sourceId,
     tool: 'zcode',
     name: state.title,
     capabilities: ['events'],
   })
-  if (res && res.ok) {
+  if (ok) {
     state.registered = true
     console.log(`[adapter] Registered: ${state.title} → ${state.sourceId}`)
   }

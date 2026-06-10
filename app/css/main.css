@@ -386,6 +386,7 @@ html, body {
   flex-direction: column;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
+  border-left: 3px solid var(--border-color);
   border-radius: var(--radius-sm);
   margin-bottom: 0.25rem;
   cursor: pointer;
@@ -398,12 +399,7 @@ html, body {
 }
 
 .session-card-active {
-  border-color: var(--status-color);
-  background: var(--status-color-bg);
-}
-
-.session-card-active:hover {
-  border-color: var(--status-color);
+  /* Active card gets stronger tint — color set via inline style in JS */
 }
 
 /* Card summary row (always visible) */
